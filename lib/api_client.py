@@ -3,21 +3,25 @@ API Client for SAIV Backend
 Handles all communication with the backend API
 """
 
+import os
 import requests
 from typing import Dict, Any, Tuple, Optional, List
 import streamlit as st
 
+# Get backend URL from environment variable, default to localhost for local development
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
+
 class APIClient:
     """Client for interacting with SAIV backend API"""
 
-    def __init__(self, base_url: str = "http://localhost:8000/api/v1"):
+    def __init__(self, base_url: str = None):
         """
         Initialize API client
 
         Args:
             base_url: Base URL for the API
         """
-        self.base_url = base_url
+        self.base_url = base_url or f"{BACKEND_URL}/api/v1"
         self.token = None
         self.session = requests.Session()
 
