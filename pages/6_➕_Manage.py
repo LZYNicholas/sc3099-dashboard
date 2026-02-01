@@ -67,13 +67,27 @@ def api_patch(endpoint: str, data: dict):
         st.error(f"Connection error: {str(e)}")
         return None
 
+def api_put(endpoint: str, data: dict):
+    """Make PUT request to API"""
+    try:
+        response = requests.put(
+            f"{API_BASE_URL}{endpoint}",
+            json=data,
+            headers=get_headers(),
+            timeout=10
+        )
+        return response
+    except Exception as e:
+        st.error(f"Connection error: {str(e)}")
+        return None
+
 st.title("➕ Course & Session Management")
 st.markdown("Create and manage courses and sessions for student attendance.")
 
 st.markdown("---")
 
 # Tabs for different management functions
-tab1, tab2, tab3, tab4 = st.tabs(["📚 Create Course", "🎯 Create Session", "👥 Manage Enrollments", "⚙️ Session Status"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📚 Create Course", "🎯 Create Session", "👥 Manage Enrollments", "⚙️ Session Status", "♻️ Recovery"])
 
 # ============================================================================
 # TAB 1: CREATE COURSE
@@ -180,7 +194,7 @@ with tab1:
     if st.button("🔄 Refresh Courses"):
         st.rerun()
 
-    response = api_get("/courses/", {"limit": 50})
+    response = api_get("/courses/", {"limit": 50, "is_active": True})
     if response and response.status_code == 200:
         courses = response.json().get('items', [])
         if courses:
@@ -195,6 +209,47 @@ with tab1:
                         st.write(f"**Geofence:** {course.get('geofence_radius_meters', 100)}m")
                         st.write(f"**Risk Threshold:** {course.get('risk_threshold', 0.5)}")
                         st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
+                    
+                    # Delete button - only for active courses
+                    if course.get('is_active'):
+                        # Check if course has any sessions
+                        sessions_response = api_get("/sessions/", {"course_id": course.get('id'), "limit": 10})
+                        course_sessions = []
+                        if sessions_response and sessions_response.status_code == 200:
+                            course_sessions = sessions_response.json().get('items', [])
+
+                        # Show warning if course has sessions
+                        if course_sessions:
+                            active_sessions = [s for s in course_sessions if s.get('status') in ['scheduled', 'active']]
+                            if active_sessions:
+                                st.warning(f"⚠️ This course has {len(active_sessions)} scheduled/active session(s). Deleting will prevent new check-ins.")
+                            else:
+                                st.caption(f"ℹ️ This course has {len(course_sessions)} session(s).")
+
+                        if st.button(f"🗑️ Delete Course", key=f"delete_course_{course.get('id')}"):
+                            try:
+                                headers = {}
+                                token = st.session_state.get('token')
+                                if token:
+                                    headers["Authorization"] = f"Bearer {token}"
+
+                                response = requests.delete(
+                                    f"{API_BASE_URL}/courses/{course.get('id')}",
+                                    headers=headers,
+                                    timeout=10
+                                )
+
+                                if response.status_code == 204:
+                                    st.success("✅ Course deleted (deactivated)!")
+                                    st.rerun()
+                                else:
+                                    try:
+                                        error = response.json().get('detail', 'Unknown error')
+                                    except:
+                                        error = response.text
+                                    st.error(f"Failed to delete: {error}")
+                            except Exception as e:
+                                st.error(f"Connection error: {str(e)}")
         else:
             st.info("No courses found. Create one above!")
     else:
@@ -208,8 +263,8 @@ with tab2:
     st.subheader("🎯 Create New Session")
     st.markdown("Create a new attendance session for a course.")
 
-    # Get courses for dropdown
-    response = api_get("/courses/", {"limit": 100})
+    # Get only ACTIVE courses for dropdown - cannot create sessions for deleted courses
+    response = api_get("/courses/", {"limit": 100, "is_active": True})
     courses = []
     if response and response.status_code == 200:
         courses = response.json().get('items', [])
@@ -241,18 +296,28 @@ with tab2:
                 )
 
             with col2:
-                # Date and time inputs
+                # Date and time inputs - default to 10 minutes from now
+                default_start = datetime.now() + timedelta(minutes=10)
+                # Round up to next 5-minute interval
+                minutes = default_start.minute
+                rounded_minutes = ((minutes // 5) + 1) * 5
+                if rounded_minutes >= 60:
+                    default_start = default_start.replace(hour=default_start.hour + 1, minute=0, second=0, microsecond=0)
+                else:
+                    default_start = default_start.replace(minute=rounded_minutes, second=0, microsecond=0)
+                default_end = default_start + timedelta(hours=2)
+                
                 session_date = st.date_input(
                     "Session Date *",
-                    value=datetime.now().date()
+                    value=default_start.date()
                 )
                 start_time = st.time_input(
                     "Start Time *",
-                    value=datetime.now().replace(hour=10, minute=0).time()
+                    value=default_start.time()
                 )
                 end_time = st.time_input(
                     "End Time *",
-                    value=datetime.now().replace(hour=12, minute=0).time()
+                    value=default_end.time()
                 )
 
             st.markdown("##### Check-in Window")
@@ -318,15 +383,32 @@ with tab2:
             submit_session = st.form_submit_button("Create Session", type="primary", use_container_width=True)
 
             if submit_session:
-                if not session_name:
-                    st.error("Please enter a session name")
-                else:
-                    # Build datetime objects
-                    scheduled_start = datetime.combine(session_date, start_time)
-                    scheduled_end = datetime.combine(session_date, end_time)
-                    checkin_opens = scheduled_start - timedelta(minutes=checkin_opens_minutes)
-                    checkin_closes = scheduled_start + timedelta(minutes=checkin_closes_minutes)
+                # Build datetime objects first for validation
+                scheduled_start = datetime.combine(session_date, start_time)
+                scheduled_end = datetime.combine(session_date, end_time)
+                checkin_opens = scheduled_start - timedelta(minutes=checkin_opens_minutes)
+                checkin_closes = scheduled_start + timedelta(minutes=checkin_closes_minutes)
 
+                # Validation checks
+                validation_errors = []
+
+                if not session_name:
+                    validation_errors.append("Please enter a session name")
+
+                if scheduled_end <= scheduled_start:
+                    validation_errors.append("End time must be after start time")
+
+                if checkin_closes <= checkin_opens:
+                    validation_errors.append("Check-in close time must be after open time")
+
+                # Warn if session is in the past (but allow it - instructor might be backfilling)
+                if scheduled_start < datetime.now():
+                    st.warning("⚠️ Note: This session is scheduled in the past.")
+
+                if validation_errors:
+                    for error in validation_errors:
+                        st.error(error)
+                else:
                     session_data = {
                         "course_id": selected_course['id'],
                         "name": session_name,
@@ -367,7 +449,13 @@ with tab2:
     if st.button("🔄 Refresh Sessions"):
         st.rerun()
 
+    # Get all sessions and active courses to check status
     response = api_get("/sessions/", {"limit": 50})
+    active_courses_resp = api_get("/courses/", {"limit": 100, "is_active": True})
+    active_course_ids_list = set()
+    if active_courses_resp and active_courses_resp.status_code == 200:
+        active_course_ids_list = {c['id'] for c in active_courses_resp.json().get('items', [])}
+
     if response and response.status_code == 200:
         sessions = response.json().get('items', [])
         if sessions:
@@ -379,7 +467,14 @@ with tab2:
                     'cancelled': '🔴'
                 }.get(session.get('status'), '❓')
 
-                with st.expander(f"{status_emoji} {session.get('course_code', 'N/A')} - {session.get('name')} ({session.get('status')})"):
+                # Check if course is deleted
+                course_deleted = session.get('course_id') not in active_course_ids_list
+                deleted_indicator = " ⚠️ [COURSE DELETED]" if course_deleted else ""
+
+                with st.expander(f"{status_emoji} {session.get('course_code', 'N/A')} - {session.get('name')} ({session.get('status')}){deleted_indicator}"):
+                    if course_deleted:
+                        st.error("⚠️ The course for this session has been deleted. This session cannot be activated.")
+
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write(f"**ID:** `{session.get('id')}`")
@@ -402,8 +497,8 @@ with tab3:
     st.subheader("👥 Manage Student Enrollments")
     st.markdown("Enroll students in courses.")
 
-    # Get courses for dropdown
-    response = api_get("/courses/", {"limit": 100})
+    # Get only ACTIVE courses for dropdown - cannot enroll in deleted courses
+    response = api_get("/courses/", {"limit": 100, "is_active": True})
     courses = []
     if response and response.status_code == 200:
         courses = response.json().get('items', [])
@@ -537,6 +632,13 @@ with tab4:
     if response and response.status_code == 200:
         sessions = response.json().get('items', [])
 
+    # Also get active courses to check if session's course is still active
+    active_courses_response = api_get("/courses/", {"limit": 100, "is_active": True})
+    active_course_ids = set()
+    if active_courses_response and active_courses_response.status_code == 200:
+        active_courses = active_courses_response.json().get('items', [])
+        active_course_ids = {c['id'] for c in active_courses}
+
     if not sessions:
         st.warning("No sessions found. Please create a session first.")
     else:
@@ -552,6 +654,10 @@ with tab4:
         selected_session = session_options[selected_session_name]
 
         st.markdown("---")
+
+        # Check if the course is still active
+        course_id = selected_session.get('course_id')
+        course_is_active = course_id in active_course_ids
 
         col1, col2 = st.columns(2)
 
@@ -569,65 +675,201 @@ with tab4:
         with col2:
             st.markdown("**Session Details:**")
             st.write(f"ID: `{selected_session.get('id')}`")
+            if not course_is_active:
+                st.error("⚠️ Course has been deleted!")
 
         st.markdown("---")
+
+        # Show warning if course is deleted
+        if not course_is_active:
+            st.warning("⚠️ This session belongs to a deleted course. You cannot activate it. Restore the course first or cancel/close this session.")
+
         st.markdown("##### Change Status")
+
+        # Define valid state transitions
+        # scheduled -> active, cancelled
+        # active -> closed, cancelled
+        # closed -> (none - finalized)
+        # cancelled -> (none - terminal state)
+
+        valid_transitions = {
+            'scheduled': ['active', 'cancelled'],
+            'active': ['closed', 'cancelled'],
+            'closed': [],  # Finalized - no transitions allowed
+            'cancelled': []  # Terminal state - no transitions allowed
+        }
+
+        allowed_next_states = valid_transitions.get(status, [])
+
+        # Additional restriction: cannot activate if course is deleted
+        if not course_is_active and 'active' in allowed_next_states:
+            allowed_next_states = [s for s in allowed_next_states if s != 'active']
 
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            if st.button("🟢 Activate", use_container_width=True, type="primary"):
-                response = api_patch(
-                    f"/admin/sessions/{selected_session['id']}/status",
-                    {"status": "active"}
-                )
-                if response and response.status_code == 200:
-                    st.success("✅ Session activated!")
-                    st.rerun()
-                else:
-                    st.error("Failed to activate session")
+            can_activate = 'active' in allowed_next_states
+            if st.button("🟢 Activate", use_container_width=True, type="primary", disabled=not can_activate):
+                if can_activate:
+                    response = api_patch(
+                        f"/admin/sessions/{selected_session['id']}/status",
+                        {"status": "active"}
+                    )
+                    if response and response.status_code == 200:
+                        st.success("✅ Session activated!")
+                        st.rerun()
+                    else:
+                        error_msg = "Failed to activate session"
+                        try:
+                            error_msg = response.json().get('detail', error_msg)
+                        except:
+                            pass
+                        st.error(error_msg)
 
         with col2:
-            if st.button("⚫ Close", use_container_width=True):
-                response = api_patch(
-                    f"/admin/sessions/{selected_session['id']}/status",
-                    {"status": "closed"}
-                )
-                if response and response.status_code == 200:
-                    st.success("✅ Session closed!")
-                    st.rerun()
-                else:
-                    st.error("Failed to close session")
+            can_close = 'closed' in allowed_next_states
+            if st.button("⚫ Close", use_container_width=True, disabled=not can_close):
+                if can_close:
+                    response = api_patch(
+                        f"/admin/sessions/{selected_session['id']}/status",
+                        {"status": "closed"}
+                    )
+                    if response and response.status_code == 200:
+                        st.success("✅ Session closed!")
+                        st.rerun()
+                    else:
+                        error_msg = "Failed to close session"
+                        try:
+                            error_msg = response.json().get('detail', error_msg)
+                        except:
+                            pass
+                        st.error(error_msg)
 
         with col3:
-            if st.button("🔴 Cancel", use_container_width=True):
-                response = api_patch(
-                    f"/admin/sessions/{selected_session['id']}/status",
-                    {"status": "cancelled"}
-                )
-                if response and response.status_code == 200:
-                    st.success("✅ Session cancelled!")
-                    st.rerun()
-                else:
-                    st.error("Failed to cancel session")
+            can_cancel = 'cancelled' in allowed_next_states
+            if st.button("🔴 Cancel", use_container_width=True, disabled=not can_cancel):
+                if can_cancel:
+                    response = api_patch(
+                        f"/admin/sessions/{selected_session['id']}/status",
+                        {"status": "cancelled"}
+                    )
+                    if response and response.status_code == 200:
+                        st.success("✅ Session cancelled!")
+                        st.rerun()
+                    else:
+                        error_msg = "Failed to cancel session"
+                        try:
+                            error_msg = response.json().get('detail', error_msg)
+                        except:
+                            pass
+                        st.error(error_msg)
 
         with col4:
-            if st.button("📅 Schedule", use_container_width=True):
-                response = api_patch(
-                    f"/admin/sessions/{selected_session['id']}/status",
-                    {"status": "scheduled"}
-                )
-                if response and response.status_code == 200:
-                    st.success("✅ Session set to scheduled!")
-                    st.rerun()
-                else:
-                    st.error("Failed to update session")
+            # Schedule button is not typically allowed - sessions don't go backward
+            # Only show if we want to allow re-scheduling (uncomment if needed)
+            st.button("📅 Schedule", use_container_width=True, disabled=True,
+                     help="Sessions cannot be moved back to scheduled status")
+
+        # Show explanation of current state
+        st.markdown("---")
+        if status == 'closed':
+            st.info("ℹ️ This session is **closed**. Attendance has been finalized and cannot be changed.")
+        elif status == 'cancelled':
+            st.info("ℹ️ This session is **cancelled**. No further changes are allowed.")
+        elif status == 'active':
+            st.info("ℹ️ This session is **active**. Students can currently check in. Close it when the check-in period ends.")
+        elif status == 'scheduled':
+            st.info("ℹ️ This session is **scheduled**. Activate it to open check-in for students.")
 
         st.markdown("---")
-        st.info("""
-        **Status Guide:**
-        - **Scheduled**: Session is planned but check-in not yet open
-        - **Active**: Check-in is open, students can check in
-        - **Closed**: Check-in has ended, attendance finalized
-        - **Cancelled**: Session was cancelled, no attendance recorded
+        st.markdown("""
+        **Status Transition Rules:**
+        - **Scheduled** → Active (open check-in) or Cancelled
+        - **Active** → Closed (finalize attendance) or Cancelled
+        - **Closed** → No changes (attendance is finalized)
+        - **Cancelled** → No changes (terminal state)
         """)
+
+        # Delete button - only for scheduled or cancelled sessions (no check-ins recorded)
+        if status in ['scheduled', 'cancelled']:
+            st.markdown("---")
+            st.markdown("##### ⚠️ Danger Zone")
+            st.caption("Sessions can only be deleted if they are scheduled or cancelled (no attendance recorded).")
+            if st.button("🗑️ Delete Session", use_container_width=True, type="secondary"):
+                try:
+                    # DELETE request without Content-Type header
+                    headers = {}
+                    token = st.session_state.get('token')
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+
+                    response = requests.delete(
+                        f"{API_BASE_URL}/sessions/{selected_session['id']}",
+                        headers=headers,
+                        timeout=10
+                    )
+
+                    if response.status_code == 204:
+                        st.success("✅ Session deleted!")
+                        st.rerun()
+                    else:
+                        try:
+                            error = response.json().get('detail', 'Unknown error')
+                        except:
+                            error = response.text
+                        st.error(f"Failed to delete: {error}")
+                except Exception as e:
+                    st.error(f"Connection error: {str(e)}")
+        elif status in ['active', 'closed']:
+            st.markdown("---")
+            st.markdown("##### ⚠️ Danger Zone")
+            st.warning("This session cannot be deleted because it has/had active check-ins. Close or cancel it instead.")
+
+
+# ============================================================================
+# TAB 5: RECOVERY
+# ============================================================================
+with tab5:
+    st.subheader("♻️ Recover Deleted Courses")
+    st.markdown("Reactivate courses that were previously deleted (soft-deleted).")
+
+    if st.button("🔄 Refresh Deleted Courses"):
+        st.rerun()
+
+    # Get inactive courses
+    response = api_get("/courses/", {"limit": 100, "is_active": False})
+    if response and response.status_code == 200:
+        deleted_courses = response.json().get('items', [])
+        if deleted_courses:
+            st.write(f"Found **{len(deleted_courses)}** deleted courses:")
+            
+            for course in deleted_courses:
+                with st.expander(f"🗑️ {course.get('code')} - {course.get('name')}"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**ID:** `{course.get('id')}`")
+                        st.write(f"**Semester:** {course.get('semester')}")
+                    with col2:
+                        st.write(f"**Venue:** {course.get('venue_name', 'Not set')}")
+                        st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
+                    
+                    # Restore button
+                    if st.button(f"♻️ Restore Course", key=f"restore_course_{course.get('id')}"):
+                        restore_response = api_put(
+                            f"/courses/{course.get('id')}",
+                            {"is_active": True}
+                        )
+                        if restore_response and restore_response.status_code == 200:
+                            st.success("✅ Course restored!")
+                            st.rerun()
+                        else:
+                            try:
+                                error = restore_response.json().get('detail', 'Unknown error')
+                            except:
+                                error = restore_response.text if restore_response else 'Connection error'
+                            st.error(f"Failed to restore: {error}")
+        else:
+            st.info("No deleted courses found.")
+    else:
+        st.warning("Could not load deleted courses")
+

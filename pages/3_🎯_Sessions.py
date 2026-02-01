@@ -38,16 +38,21 @@ def main():
     st.title("🎯 Session Monitoring")
     st.markdown("Monitor active sessions and view check-in details.")
 
-    # Fetch courses for filter
+    # Fetch active courses for filter (only show active courses)
     try:
         courses_response = requests.get(
             f"{API_BASE_URL}/courses/",
+            params={"is_active": True, "limit": 100},
             headers=get_headers(),
             timeout=10
         )
-        courses = courses_response.json() if courses_response.status_code == 200 else []
+        courses_data = courses_response.json() if courses_response.status_code == 200 else {}
+        courses = courses_data.get('items', []) if isinstance(courses_data, dict) else courses_data
     except:
         courses = []
+
+    # Track active course IDs for later use
+    active_course_ids = {c['id'] for c in courses}
 
     # Filters
     col1, col2, col3 = st.columns(3)
@@ -58,9 +63,10 @@ def main():
             format_func=lambda x: 'All Courses' if x == 'All' else next((f"{c['code']} - {c['name']}" for c in courses if c['id'] == x), x)
         )
     with col2:
+        # Fixed status options to match actual backend status values
         status_filter = st.selectbox(
             "Filter by Status",
-            options=['All', 'active', 'scheduled', 'completed', 'cancelled']
+            options=['All', 'active', 'scheduled', 'closed', 'cancelled']
         )
     with col3:
         if st.button("🔄 Refresh", use_container_width=True):
@@ -71,14 +77,15 @@ def main():
     # Fetch sessions
     try:
         url = f"{API_BASE_URL}/sessions/"
-        params = {}
+        params = {"limit": 100}
         if course_filter != 'All':
             params['course_id'] = course_filter
 
         response = requests.get(url, params=params, headers=get_headers(), timeout=10)
 
         if response.status_code == 200:
-            sessions = response.json()
+            sessions_data = response.json()
+            sessions = sessions_data.get('items', []) if isinstance(sessions_data, dict) else sessions_data
 
             # Apply status filter
             if status_filter != 'All':
@@ -88,19 +95,30 @@ def main():
                 st.info("No sessions found matching the filters.")
                 return
 
+            # Check for sessions with deleted courses
+            sessions_with_deleted_courses = [s for s in sessions if s.get('course_id') not in active_course_ids]
+            if sessions_with_deleted_courses:
+                st.warning(f"⚠️ {len(sessions_with_deleted_courses)} session(s) belong to deleted courses and cannot accept check-ins.")
+
             # Active Sessions Section
             active_sessions = [s for s in sessions if s.get('status') == 'active']
             if active_sessions:
                 st.subheader(f"🟢 Active Sessions ({len(active_sessions)})")
                 for session in active_sessions:
-                    with st.expander(f"**{session.get('name', 'Session')}** - {session.get('course_name', 'Course')}", expanded=True):
+                    course_deleted = session.get('course_id') not in active_course_ids
+                    title_suffix = " ⚠️ [COURSE DELETED]" if course_deleted else ""
+
+                    with st.expander(f"**{session.get('name', 'Session')}** - {session.get('course_name', 'Course')}{title_suffix}", expanded=True):
+                        if course_deleted:
+                            st.error("⚠️ This session's course has been deleted. Check-ins may not work properly.")
+
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.write(f"**Type:** {session.get('session_type', 'N/A')}")
                             st.write(f"**Start:** {session.get('scheduled_start', 'N/A')[:16] if session.get('scheduled_start') else 'N/A'}")
                         with col2:
                             st.write(f"**End:** {session.get('scheduled_end', 'N/A')[:16] if session.get('scheduled_end') else 'N/A'}")
-                            st.write(f"**Location:** {session.get('location', 'N/A')}")
+                            st.write(f"**Location:** {session.get('venue_name', session.get('location', 'N/A'))}")
                         with col3:
                             # Quick stats for this session
                             st.metric("Check-ins", session.get('checkin_count', 0))
@@ -120,10 +138,15 @@ def main():
             # Prepare data for display
             display_data = []
             for s in sessions:
+                course_deleted = s.get('course_id') not in active_course_ids
+                course_display = s.get('course_name', s.get('course_code', 'N/A'))
+                if course_deleted:
+                    course_display = f"⚠️ {course_display} [DELETED]"
+
                 display_data.append({
                     'Status': f"{get_status_color(s.get('status', ''))} {s.get('status', 'unknown').title()}",
                     'Name': s.get('name', 'N/A'),
-                    'Course': s.get('course_name', s.get('course_code', 'N/A')),
+                    'Course': course_display,
                     'Type': s.get('session_type', 'N/A'),
                     'Scheduled Start': s.get('scheduled_start', 'N/A')[:16] if s.get('scheduled_start') else 'N/A',
                     'Check-ins': s.get('checkin_count', 0),
@@ -137,7 +160,14 @@ def main():
             st.markdown("---")
             st.subheader("🔍 Session Details")
 
-            session_options = {s['id']: f"{s.get('name', 'Session')} ({s.get('course_name', 'Course')})" for s in sessions}
+            session_options = {}
+            for s in sessions:
+                course_deleted = s.get('course_id') not in active_course_ids
+                label = f"{s.get('name', 'Session')} ({s.get('course_name', 'Course')})"
+                if course_deleted:
+                    label = f"⚠️ {label}"
+                session_options[s['id']] = label
+
             selected_session_id = st.selectbox(
                 "Select a session to view details",
                 options=list(session_options.keys()),
@@ -145,7 +175,7 @@ def main():
             )
 
             if selected_session_id:
-                show_session_details(selected_session_id, sessions)
+                show_session_details(selected_session_id, sessions, active_course_ids)
 
         else:
             st.error("Failed to load sessions.")
@@ -189,11 +219,19 @@ def show_session_checkins(session_id):
         st.warning(f"Error loading check-ins: {str(e)}")
 
 
-def show_session_details(session_id, sessions):
+def show_session_details(session_id, sessions, active_course_ids=None):
     """Display detailed session information"""
     session = next((s for s in sessions if s['id'] == session_id), None)
     if not session:
         return
+
+    # Check if course is deleted
+    if active_course_ids is None:
+        active_course_ids = set()
+    course_deleted = session.get('course_id') not in active_course_ids
+
+    if course_deleted:
+        st.error("⚠️ This session's course has been deleted. The session cannot accept new check-ins.")
 
     col1, col2 = st.columns(2)
 
@@ -202,7 +240,7 @@ def show_session_details(session_id, sessions):
         st.write(f"**Name:** {session.get('name', 'N/A')}")
         st.write(f"**Type:** {session.get('session_type', 'N/A')}")
         st.write(f"**Status:** {get_status_color(session.get('status', ''))} {session.get('status', 'unknown').title()}")
-        st.write(f"**Location:** {session.get('location', 'Not specified')}")
+        st.write(f"**Location:** {session.get('venue_name', session.get('location', 'Not specified'))}")
 
     with col2:
         st.markdown("#### Timing")

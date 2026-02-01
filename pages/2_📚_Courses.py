@@ -29,19 +29,21 @@ def main():
     st.title("📚 Course Analytics")
     st.markdown("View detailed statistics and analytics for your courses.")
 
-    # Fetch courses
+    # Fetch only active courses (no analytics for deleted courses)
     try:
         response = requests.get(
             f"{API_BASE_URL}/courses/",
+            params={"is_active": True, "limit": 100},
             headers=get_headers(),
             timeout=10
         )
 
         if response.status_code == 200:
-            courses = response.json()
+            courses_data = response.json()
+            courses = courses_data.get('items', []) if isinstance(courses_data, dict) else courses_data
 
             if not courses:
-                st.info("No courses found. Create a course in the Manage page.")
+                st.info("No active courses found. Create a course in the Manage page.")
                 return
 
             # Course selector
