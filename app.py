@@ -36,8 +36,8 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user' not in st.session_state:
     st.session_state.user = None
-if 'token' not in st.session_state:
-    st.session_state.token = None
+if 'access_token' not in st.session_state:
+    st.session_state.access_token = None
 
 
 def login(email: str, password: str) -> bool:
@@ -59,8 +59,13 @@ def login(email: str, password: str) -> bool:
                 st.error("Access denied. Only instructors, TAs, and admins can access this dashboard.")
                 return False
 
-            # Backend returns token in cookie, but we'll use user data for now
-            st.session_state.token = "authenticated"  # Token is in cookie
+            # Extract JWT token from response body
+            token = data.get('access_token')
+            if not token:
+                st.error("No authentication token received from server.")
+                return False
+
+            st.session_state.access_token = token
             st.session_state.user = user
             st.session_state.authenticated = True
             return True
@@ -80,7 +85,7 @@ def logout():
     """Clear session"""
     st.session_state.authenticated = False
     st.session_state.user = None
-    st.session_state.token = None
+    st.session_state.access_token = None
 
 
 def login_page():
@@ -151,7 +156,7 @@ def main_page():
     st.subheader("📈 Quick Stats")
 
     try:
-        headers = {"Authorization": f"Bearer {st.session_state.token}"}
+        headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
         response = requests.get(f"{API_BASE_URL}/stats/overview", headers=headers, timeout=10)
 
         if response.status_code == 200:

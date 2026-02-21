@@ -20,7 +20,7 @@ def check_auth():
 
 def get_headers():
     """Get authorization headers"""
-    return {"Authorization": f"Bearer {st.session_state.get('token', '')}"}
+    return {"Authorization": f"Bearer {st.session_state.get('access_token', '')}"}
 
 def get_status_color(status):
     """Get color for status badge"""

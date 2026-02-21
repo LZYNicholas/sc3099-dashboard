@@ -38,8 +38,10 @@ class APIClient:
 
     def login(self, email: str, password: str) -> Tuple[bool, Any]:
         try:
+            # Use the correct backend login endpoint
+            base = self.base_url.replace("/api/v1", "")
             response = self.session.post(
-                f"{self.base_url}/auth/login",
+                f"{base}/user/login",
                 json={"email": email, "password": password},
                 headers={"Content-Type": "application/json"}
             )

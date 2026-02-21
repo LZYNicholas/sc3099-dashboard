@@ -20,7 +20,7 @@ API_BASE_URL = "http://localhost:8000/api/v1"
 
 def get_headers():
     """Get authorization headers"""
-    token = st.session_state.get('token')
+    token = st.session_state.get('access_token')
     if token:
         return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     return {"Content-Type": "application/json"}
@@ -229,7 +229,7 @@ with tab1:
                         if st.button(f"🗑️ Delete Course", key=f"delete_course_{course.get('id')}"):
                             try:
                                 headers = {}
-                                token = st.session_state.get('token')
+                                token = st.session_state.get('access_token')
                                 if token:
                                     headers["Authorization"] = f"Bearer {token}"
 
@@ -799,7 +799,7 @@ with tab4:
                 try:
                     # DELETE request without Content-Type header
                     headers = {}
-                    token = st.session_state.get('token')
+                    token = st.session_state.get('access_token')
                     if token:
                         headers["Authorization"] = f"Bearer {token}"
 
