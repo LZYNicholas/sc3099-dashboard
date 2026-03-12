@@ -55,7 +55,8 @@ def course_reports():
         )
 
         if response.status_code == 200:
-            courses = response.json()
+            courses_data = response.json()
+            courses = courses_data.get('items', []) if isinstance(courses_data, dict) else courses_data
 
             if not courses:
                 st.info("No courses available. Create a course first.")
@@ -153,7 +154,8 @@ def session_reports():
         )
 
         if courses_response.status_code == 200:
-            courses = courses_response.json()
+            courses_data = courses_response.json()
+            courses = courses_data.get('items', []) if isinstance(courses_data, dict) else courses_data
 
             if not courses:
                 st.info("No courses available.")
@@ -177,7 +179,8 @@ def session_reports():
                 timeout=10
             )
 
-            sessions = sessions_response.json() if sessions_response.status_code == 200 else []
+            sessions_data = sessions_response.json() if sessions_response.status_code == 200 else {}
+            sessions = sessions_data.get('items', []) if isinstance(sessions_data, dict) else sessions_data
 
             with col2:
                 if sessions:
@@ -286,17 +289,19 @@ def custom_reports():
                 headers=get_headers(),
                 timeout=10
             )
-            courses = courses_response.json() if courses_response.status_code == 200 else []
+            courses_data = courses_response.json() if courses_response.status_code == 200 else {}
+            courses = courses_data.get('items', []) if isinstance(courses_data, dict) else courses_data
         except:
             courses = []
 
+        selected_course = None
         if courses:
-            course_options = ['All'] + [c['id'] for c in courses]
-            selected_courses = st.multiselect(
-                "Filter by Courses",
-                options=course_options,
-                default=['All'],
-                format_func=lambda x: 'All Courses' if x == 'All' else next((f"{c['code']} - {c['name']}" for c in courses if c['id'] == x), x)
+            course_options = {c['id']: f"{c['code']} - {c['name']}" for c in courses}
+            selected_course = st.selectbox(
+                "Select Course",
+                options=list(course_options.keys()),
+                format_func=lambda x: course_options[x],
+                key="custom_course_select"
             )
 
     with col2:
@@ -305,88 +310,164 @@ def custom_reports():
         if report_type == 'attendance_summary':
             fields = st.multiselect(
                 "Include Fields",
-                options=['date', 'course', 'session', 'total_students', 'checked_in', 'attendance_rate', 'on_time', 'late'],
+                options=['date', 'course', 'session', 'attendance_rate', 'checked_in'],
                 default=['date', 'course', 'session', 'checked_in', 'attendance_rate']
             )
-
         elif report_type == 'student_performance':
             fields = st.multiselect(
                 "Include Fields",
-                options=['student_name', 'student_email', 'course', 'total_sessions', 'attended', 'missed', 'attendance_rate', 'avg_checkin_time'],
-                default=['student_name', 'student_email', 'attendance_rate']
+                options=['student_name', 'sessions_attended', 'attendance_rate', 'average_risk_score'],
+                default=['student_name', 'attendance_rate']
             )
-
         elif report_type == 'risk_analysis':
             fields = st.multiselect(
                 "Include Fields",
-                options=['student_name', 'session', 'timestamp', 'risk_score', 'flags', 'liveness_score', 'face_match_score', 'location_valid'],
-                default=['student_name', 'session', 'risk_score', 'flags']
+                options=['student_name', 'session_name', 'checked_in_at', 'risk_score', 'status', 'liveness_passed', 'distance_from_venue_meters'],
+                default=['student_name', 'session_name', 'risk_score', 'status']
             )
-
         else:  # enrollment_status
             fields = st.multiselect(
                 "Include Fields",
-                options=['student_name', 'student_email', 'course', 'enrolled_date', 'status', 'face_enrolled'],
-                default=['student_name', 'course', 'status']
+                options=['student_name', 'student_email', 'enrolled_at', 'is_active', 'face_enrolled'],
+                default=['student_name', 'student_email', 'is_active']
             )
 
         export_format = st.selectbox(
             "Export Format",
-            options=['csv', 'xlsx', 'json'],
-            format_func=lambda x: {'csv': 'CSV', 'xlsx': 'Excel', 'json': 'JSON'}[x],
+            options=['csv', 'json'],
+            format_func=lambda x: {'csv': 'CSV', 'json': 'JSON'}[x],
             key="custom_format"
         )
 
     st.markdown("---")
 
-    # Preview section
-    st.markdown("#### Preview")
-    st.info("Click 'Generate Report' to preview and download the custom report.")
+    # Generate section
+    st.markdown("#### Results")
 
     if st.button("📥 Generate Custom Report", use_container_width=True, key="gen_custom_report"):
         with st.spinner("Generating custom report..."):
-            # Build sample data for demonstration
-            # In production, this would call a custom report endpoint
-            st.warning("Custom report generation requires a backend endpoint. Showing sample structure.")
+            df = None
 
-            sample_data = []
-            if report_type == 'attendance_summary':
-                sample_data = [
-                    {'date': '2024-01-15', 'course': 'CS101', 'session': 'Week 1 Lecture', 'checked_in': 45, 'attendance_rate': 0.9}
-                ]
-            elif report_type == 'student_performance':
-                sample_data = [
-                    {'student_name': 'John Doe', 'student_email': 'john@example.com', 'attendance_rate': 0.85}
-                ]
-            elif report_type == 'risk_analysis':
-                sample_data = [
-                    {'student_name': 'Jane Smith', 'session': 'Week 2 Lab', 'risk_score': 0.75, 'flags': ['location_mismatch']}
-                ]
-            else:
-                sample_data = [
-                    {'student_name': 'Bob Wilson', 'course': 'CS101', 'status': 'active'}
-                ]
+            try:
+                if report_type == 'attendance_summary' and selected_course:
+                    response = requests.get(
+                        f"{API_BASE_URL}/stats/courses/{selected_course}",
+                        params={
+                            "start_date": f"{start_date.isoformat()}T00:00:00Z",
+                            "end_date": f"{end_date.isoformat()}T23:59:59Z"
+                        },
+                        headers=get_headers(),
+                        timeout=15
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        sessions = data.get('sessions', [])
+                        if sessions:
+                            for s in sessions:
+                                s['course'] = f"{data.get('course_code', '')} - {data.get('course_name', '')}"
+                            df = pd.DataFrame(sessions)
+                            available = [f for f in fields if f in df.columns]
+                            if available:
+                                df = df[available]
+                        else:
+                            st.info("No session data available for this course in the selected date range.")
+                    else:
+                        st.error(f"Failed to fetch course statistics (HTTP {response.status_code}).")
 
-            if sample_data:
-                df = pd.DataFrame(sample_data)
-                st.dataframe(df, use_container_width=True)
+                elif report_type == 'student_performance' and selected_course:
+                    response = requests.get(
+                        f"{API_BASE_URL}/stats/courses/{selected_course}",
+                        headers=get_headers(),
+                        timeout=15
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        students = data.get('student_attendance', [])
+                        if students:
+                            df = pd.DataFrame(students)
+                            available = [f for f in fields if f in df.columns]
+                            if available:
+                                df = df[available]
+                        else:
+                            st.info("No student attendance data available for this course.")
+                    else:
+                        st.error(f"Failed to fetch student data (HTTP {response.status_code}).")
 
-                # Provide download
+                elif report_type == 'risk_analysis':
+                    params = {
+                        "min_risk_score": 0.3,
+                        "start_date": f"{start_date.isoformat()}T00:00:00Z",
+                        "end_date": f"{end_date.isoformat()}T23:59:59Z",
+                        "limit": 500
+                    }
+                    if selected_course:
+                        params["course_id"] = selected_course
+                    response = requests.get(
+                        f"{API_BASE_URL}/checkins/",
+                        params=params,
+                        headers=get_headers(),
+                        timeout=15
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        checkins = data.get('items', []) if isinstance(data, dict) else data
+                        if checkins:
+                            df = pd.DataFrame(checkins)
+                            available = [f for f in fields if f in df.columns]
+                            if available:
+                                df = df[available]
+                        else:
+                            st.info("No elevated-risk check-ins found for the selected period.")
+                    else:
+                        st.error(f"Failed to fetch check-in data (HTTP {response.status_code}).")
+
+                elif report_type == 'enrollment_status' and selected_course:
+                    response = requests.get(
+                        f"{API_BASE_URL}/enrollments/course/{selected_course}",
+                        headers=get_headers(),
+                        timeout=15
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        students = data.get('students', []) if isinstance(data, dict) else data
+                        if students:
+                            df = pd.DataFrame(students)
+                            available = [f for f in fields if f in df.columns]
+                            if available:
+                                df = df[available]
+                        else:
+                            st.info("No enrolled students found for this course.")
+                    else:
+                        st.error(f"Failed to fetch enrollment data (HTTP {response.status_code}).")
+
+                else:
+                    if not selected_course and report_type != 'risk_analysis':
+                        st.warning("Please select a course to generate this report.")
+
+            except Exception as e:
+                st.error(f"Error generating report: {str(e)}")
+
+            # Display and export
+            if df is not None and not df.empty:
+                st.success(f"Generated report with {len(df)} records.")
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 if export_format == 'csv':
                     csv_data = df.to_csv(index=False)
                     st.download_button(
-                        "📥 Download Sample CSV",
+                        "📥 Download CSV",
                         csv_data,
-                        f"custom_report_{report_type}.csv",
+                        f"custom_report_{report_type}_{timestamp}.csv",
                         "text/csv",
                         use_container_width=True
                     )
                 elif export_format == 'json':
                     json_data = df.to_json(orient='records', indent=2)
                     st.download_button(
-                        "📥 Download Sample JSON",
+                        "📥 Download JSON",
                         json_data,
-                        f"custom_report_{report_type}.json",
+                        f"custom_report_{report_type}_{timestamp}.json",
                         "application/json",
                         use_container_width=True
                     )

@@ -100,6 +100,91 @@ def main():
 
             st.markdown("---")
 
+            # Check-ins by Hour & Verification Status Row
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("🕐 Check-ins by Hour")
+                try:
+                    from datetime import date
+                    today_str = date.today().isoformat()
+                    checkins_response = requests.get(
+                        f"{API_BASE_URL}/checkins/",
+                        params={"start_date": f"{today_str}T00:00:00Z", "limit": 500},
+                        headers=get_headers(),
+                        timeout=15
+                    )
+                    if checkins_response.status_code == 200:
+                        checkins_data = checkins_response.json()
+                        checkins_list = checkins_data.get('items', []) if isinstance(checkins_data, dict) else checkins_data
+                        if checkins_list:
+                            ci_df = pd.DataFrame(checkins_list)
+                            if 'checked_in_at' in ci_df.columns:
+                                ci_df['hour'] = pd.to_datetime(ci_df['checked_in_at']).dt.hour
+                            elif 'timestamp' in ci_df.columns:
+                                ci_df['hour'] = pd.to_datetime(ci_df['timestamp']).dt.hour
+                            else:
+                                ci_df['hour'] = 0
+                            hourly = ci_df.groupby('hour').size().reset_index(name='count')
+                            # Fill missing hours
+                            all_hours = pd.DataFrame({'hour': range(24)})
+                            hourly = all_hours.merge(hourly, on='hour', how='left').fillna(0)
+                            hourly['count'] = hourly['count'].astype(int)
+                            hourly['hour_label'] = hourly['hour'].apply(lambda h: f"{h:02d}:00")
+                            fig = px.bar(
+                                hourly, x='hour_label', y='count',
+                                labels={'hour_label': 'Hour', 'count': 'Check-ins'},
+                                color_discrete_sequence=['#17becf']
+                            )
+                            fig.update_layout(showlegend=False, xaxis_tickangle=-45)
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No check-ins today to show hourly distribution.")
+                    else:
+                        st.info("Could not load check-in data for hourly chart.")
+                except Exception as e:
+                    st.warning(f"Could not load hourly check-ins: {str(e)}")
+
+            with col2:
+                st.subheader("✅ Verification Status")
+                try:
+                    checkins_response2 = requests.get(
+                        f"{API_BASE_URL}/checkins/",
+                        params={"limit": 500},
+                        headers=get_headers(),
+                        timeout=15
+                    )
+                    if checkins_response2.status_code == 200:
+                        checkins_data2 = checkins_response2.json()
+                        checkins_list2 = checkins_data2.get('items', []) if isinstance(checkins_data2, dict) else checkins_data2
+                        if checkins_list2:
+                            status_counts = {}
+                            for ci in checkins_list2:
+                                s = ci.get('status', 'unknown')
+                                status_counts[s] = status_counts.get(s, 0) + 1
+                            labels = list(status_counts.keys())
+                            values = list(status_counts.values())
+                            status_colors = {
+                                'approved': '#28a745', 'verified': '#28a745',
+                                'flagged': '#ffc107', 'pending': '#6c757d',
+                                'rejected': '#dc3545', 'appealed': '#fd7e14'
+                            }
+                            fig = go.Figure(data=[go.Pie(
+                                labels=labels,
+                                values=values,
+                                marker_colors=[status_colors.get(l, '#adb5bd') for l in labels]
+                            )])
+                            fig.update_traces(textinfo='label+percent+value')
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No check-in data available for status breakdown.")
+                    else:
+                        st.info("Could not load verification status data.")
+                except Exception as e:
+                    st.warning(f"Could not load verification status: {str(e)}")
+
+            st.markdown("---")
+
             # Recent Activity
             st.subheader("🕐 Recent Activity")
             recent = stats.get('recent_checkins', [])

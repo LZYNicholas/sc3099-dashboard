@@ -6,6 +6,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+import time
 
 # Page configuration
 st.set_page_config(page_title="Sessions - SAIV Dashboard", page_icon="🎯", layout="wide")
@@ -69,8 +70,16 @@ def main():
             options=['All', 'active', 'scheduled', 'closed', 'cancelled']
         )
     with col3:
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.rerun()
+        col_btn, col_auto = st.columns(2)
+        with col_btn:
+            if st.button("🔄 Refresh", use_container_width=True):
+                st.rerun()
+        with col_auto:
+            auto_refresh = st.toggle("Auto-refresh", value=False, help="Refresh every 30 seconds")
+
+    if auto_refresh:
+        time.sleep(30)
+        st.rerun()
 
     st.markdown("---")
 
@@ -184,7 +193,7 @@ def main():
         st.error(f"Connection error: {str(e)}")
 
 
-def show_session_checkins(session_id):
+def show_session_checkins(session_id, show_export=True):
     """Display check-ins for a session"""
     try:
         response = requests.get(
@@ -195,21 +204,52 @@ def show_session_checkins(session_id):
 
         if response.status_code == 200:
             checkins = response.json()
+            if isinstance(checkins, dict):
+                checkins = checkins.get('items', [])
             if checkins:
                 st.markdown("#### Check-ins")
                 for ci in checkins:
                     risk_color = "🟢" if ci.get('risk_score', 0) < 0.3 else "🟡" if ci.get('risk_score', 0) < 0.7 else "🔴"
-                    status_icon = "✅" if ci.get('status') == 'verified' else "⏳" if ci.get('status') == 'pending' else "❌"
+                    status_icon = "✅" if ci.get('status') in ('verified', 'approved') else "⏳" if ci.get('status') == 'pending' else "❌"
 
                     col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
                     with col1:
                         st.write(f"**{ci.get('student_name', 'Unknown')}**")
                     with col2:
-                        st.write(f"{ci.get('timestamp', 'N/A')[:16] if ci.get('timestamp') else 'N/A'}")
+                        timestamp = ci.get('checked_in_at', ci.get('timestamp', 'N/A'))
+                        st.write(f"{timestamp[:16] if timestamp and timestamp != 'N/A' else 'N/A'}")
                     with col3:
                         st.write(f"{risk_color} Risk: {ci.get('risk_score', 0):.2f}")
                     with col4:
                         st.write(f"{status_icon}")
+
+                # CSV Export
+                if show_export:
+                    st.markdown("---")
+                    export_data = []
+                    for ci in checkins:
+                        export_data.append({
+                            'Check-in ID': ci.get('id', ''),
+                            'Student ID': ci.get('student_id', ''),
+                            'Session ID': session_id,
+                            'Timestamp': ci.get('checked_in_at', ci.get('timestamp', '')),
+                            'Verification Status': ci.get('status', ''),
+                            'Risk Score': ci.get('risk_score', ''),
+                            'Liveness Score': ci.get('liveness_score', ci.get('liveness_passed', '')),
+                            'Face Match Score': ci.get('face_match_score', ''),
+                            'Latitude': ci.get('latitude', ''),
+                            'Longitude': ci.get('longitude', '')
+                        })
+                    df_export = pd.DataFrame(export_data)
+                    csv = df_export.to_csv(index=False)
+                    st.download_button(
+                        "📥 Export Check-ins CSV",
+                        csv,
+                        f"session_{session_id}_checkins.csv",
+                        "text/csv",
+                        use_container_width=True,
+                        key=f"export_csv_{session_id}"
+                    )
             else:
                 st.info("No check-ins yet.")
         else:
