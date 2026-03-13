@@ -4,6 +4,13 @@ SAIV Instructor Dashboard - Main Application
 
 import streamlit as st
 import requests
+from lib.auth_state import (
+    ALLOWED_DASHBOARD_ROLES,
+    clear_auth_state,
+    get_auth_headers,
+    initialize_auth_state,
+    save_auth_state,
+)
 
 # Page configuration
 st.set_page_config(
@@ -31,21 +38,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'user' not in st.session_state:
-    st.session_state.user = None
-if 'access_token' not in st.session_state:
-    st.session_state.access_token = None
+initialize_auth_state()
 
 
 def login(email: str, password: str) -> bool:
     """Authenticate user"""
     try:
-        # Backend uses /user/login endpoint
+        # Use the shared auth endpoint, then gate dashboard access by role.
         response = requests.post(
-            "http://localhost:8000/user/login",
+            f"{API_BASE_URL}/auth/login",
             json={"email": email, "password": password},
             timeout=10
         )
@@ -55,7 +56,7 @@ def login(email: str, password: str) -> bool:
             user = data.get('user', {})
 
             # Check role
-            if user.get('role') not in ['instructor', 'admin', 'ta']:
+            if user.get('role') not in ALLOWED_DASHBOARD_ROLES:
                 st.error("Access denied. Only instructors, TAs, and admins can access this dashboard.")
                 return False
 
@@ -65,9 +66,7 @@ def login(email: str, password: str) -> bool:
                 st.error("No authentication token received from server.")
                 return False
 
-            st.session_state.access_token = token
-            st.session_state.user = user
-            st.session_state.authenticated = True
+            save_auth_state(token, user)
             return True
         else:
             try:
@@ -83,9 +82,7 @@ def login(email: str, password: str) -> bool:
 
 def logout():
     """Clear session"""
-    st.session_state.authenticated = False
-    st.session_state.user = None
-    st.session_state.access_token = None
+    clear_auth_state()
 
 
 def login_page():
@@ -156,7 +153,7 @@ def main_page():
     st.subheader("📈 Quick Stats")
 
     try:
-        headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
+        headers = get_auth_headers()
         response = requests.get(f"{API_BASE_URL}/stats/overview", headers=headers, timeout=10)
 
         if response.status_code == 200:

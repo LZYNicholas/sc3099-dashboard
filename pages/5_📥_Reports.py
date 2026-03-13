@@ -6,24 +6,19 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+from lib.auth_state import get_auth_headers, require_auth
+from lib.response_utils import extract_items
 
 # Page configuration
 st.set_page_config(page_title="Reports - SAIV Dashboard", page_icon="📥", layout="wide")
 
 API_BASE_URL = "http://localhost:8000/api/v1"
 
-def check_auth():
-    """Check if user is authenticated"""
-    if not st.session_state.get('authenticated', False):
-        st.warning("Please login from the main page.")
-        st.stop()
-
 def get_headers():
-    """Get authorization headers"""
-    return {"Authorization": f"Bearer {st.session_state.get('access_token', '')}"}
+    return get_auth_headers()
 
 def main():
-    check_auth()
+    require_auth()
 
     st.title("📥 Reports & Data Export")
     st.markdown("Generate and download attendance reports in various formats.")
@@ -55,7 +50,7 @@ def course_reports():
         )
 
         if response.status_code == 200:
-            courses = response.json()
+            courses = extract_items(response.json())
 
             if not courses:
                 st.info("No courses available. Create a course first.")
@@ -153,7 +148,7 @@ def session_reports():
         )
 
         if courses_response.status_code == 200:
-            courses = courses_response.json()
+            courses = extract_items(courses_response.json())
 
             if not courses:
                 st.info("No courses available.")
@@ -177,7 +172,7 @@ def session_reports():
                 timeout=10
             )
 
-            sessions = sessions_response.json() if sessions_response.status_code == 200 else []
+            sessions = extract_items(sessions_response.json()) if sessions_response.status_code == 200 else []
 
             with col2:
                 if sessions:
@@ -286,18 +281,29 @@ def custom_reports():
                 headers=get_headers(),
                 timeout=10
             )
-            courses = courses_response.json() if courses_response.status_code == 200 else []
+            if courses_response.status_code == 200:
+                raw_courses = extract_items(courses_response.json())
+                # Defensive normalization so malformed payloads never crash the page.
+                courses = [
+                    c for c in raw_courses
+                    if isinstance(c, dict) and c.get('id')
+                ]
+            else:
+                courses = []
         except:
             courses = []
 
         if courses:
-            course_options = ['All'] + [c['id'] for c in courses]
+            course_options = ['All'] + [str(c.get('id')) for c in courses if c.get('id')]
             selected_courses = st.multiselect(
                 "Filter by Courses",
                 options=course_options,
                 default=['All'],
                 format_func=lambda x: 'All Courses' if x == 'All' else next((f"{c['code']} - {c['name']}" for c in courses if c['id'] == x), x)
             )
+        else:
+            selected_courses = ['All']
+            st.caption("No courses available for filtering.")
 
     with col2:
         st.markdown("#### Data Fields")

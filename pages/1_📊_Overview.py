@@ -8,24 +8,18 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from lib.auth_state import get_auth_headers, require_auth
 
 # Page configuration
 st.set_page_config(page_title="Overview - SAIV Dashboard", page_icon="📊", layout="wide")
 
 API_BASE_URL = "http://localhost:8000/api/v1"
 
-def check_auth():
-    """Check if user is authenticated"""
-    if not st.session_state.get('authenticated', False):
-        st.warning("Please login from the main page.")
-        st.stop()
-
 def get_headers():
-    """Get authorization headers"""
-    return {"Authorization": f"Bearer {st.session_state.get('access_token', '')}"}
+    return get_auth_headers()
 
 def main():
-    check_auth()
+    require_auth()
 
     st.title("📊 System Overview")
     st.markdown("Real-time statistics and system health monitoring.")
@@ -48,7 +42,7 @@ def main():
 
             # Key Metrics Row
             st.subheader("📈 Key Metrics")
-            col1, col2, col3, col4, col5 = st.columns(5)
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
 
             with col1:
                 st.metric("Total Courses", stats.get('total_courses', 0))
@@ -61,6 +55,8 @@ def main():
             with col5:
                 rate = stats.get('average_attendance_rate', 0) * 100
                 st.metric("Avg Attendance", f"{rate:.1f}%")
+            with col6:
+                st.metric("Flagged (Pending)", stats.get('flagged_pending_review', 0))
 
             st.markdown("---")
 
@@ -69,7 +65,7 @@ def main():
 
             with col1:
                 st.subheader("📅 Daily Check-ins")
-                daily_data = stats.get('daily_checkins', [])
+                daily_data = stats.get('trends', {}).get('checkins_by_day', [])
                 if daily_data:
                     df = pd.DataFrame(daily_data)
                     fig = px.bar(

@@ -6,21 +6,15 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
+from lib.auth_state import get_auth_headers, require_auth
 
 # Page configuration
 st.set_page_config(page_title="Audit Logs - SAIV Dashboard", page_icon="📋", layout="wide")
 
 API_BASE_URL = "http://localhost:8000/api/v1"
 
-def check_auth():
-    """Check if user is authenticated"""
-    if not st.session_state.get('authenticated', False):
-        st.warning("Please login from the main page.")
-        st.stop()
-
 def get_headers():
-    """Get authorization headers"""
-    return {"Authorization": f"Bearer {st.session_state.get('access_token', '')}"}
+    return get_auth_headers()
 
 def get_action_icon(action):
     """Get icon for action type"""
@@ -42,7 +36,7 @@ def get_action_icon(action):
     return '📌'
 
 def main():
-    check_auth()
+    require_auth()
 
     st.title("📋 Audit Logs")
     st.markdown("View system audit trail and activity logs.")
@@ -54,7 +48,11 @@ def main():
     with col1:
         action_filter = st.selectbox(
             "Action Type",
-            options=['All', 'login', 'logout', 'checkin', 'create', 'update', 'delete', 'enroll', 'review', 'export']
+            options=['All', 'login_success', 'login_failed', 'logout', 'user_created',
+                     'checkin_attempted', 'checkin_approved', 'checkin_flagged',
+                     'checkin_rejected', 'checkin_reviewed', 'session_created',
+                     'session_updated', 'session_deleted', 'enrollment_added',
+                     'enrollment_removed', 'data_exported', 'face_enrolled', 'security_violation']
         )
 
     with col2:
@@ -68,7 +66,7 @@ def main():
     with col3:
         entity_filter = st.selectbox(
             "Entity Type",
-            options=['All', 'user', 'course', 'session', 'checkin', 'enrollment']
+            options=['All', 'user', 'course', 'session', 'checkin', 'enrollment', 'device']
         )
 
     with col4:
@@ -102,7 +100,7 @@ def main():
         if action_filter != 'All':
             params['action'] = action_filter
         if entity_filter != 'All':
-            params['entity_type'] = entity_filter
+            params['resource_type'] = entity_filter
         if start_date:
             params['start_date'] = start_date.isoformat()
         if search_query:
@@ -116,7 +114,8 @@ def main():
         )
 
         if response.status_code == 200:
-            logs = response.json()
+            data = response.json()
+            logs = data.get('items', data) if isinstance(data, dict) else data
 
             if not logs:
                 st.info("No audit logs found matching the filters.")
@@ -159,16 +158,23 @@ def main():
                     except:
                         pass
 
+                entity_id = log.get('resource_id') or log.get('entity_id', 'N/A')
+                entity_type = log.get('resource_type') or log.get('entity_type', 'N/A')
+                details_raw = log.get('details', '')
+                if isinstance(details_raw, dict):
+                    details_str = str(details_raw)
+                else:
+                    details_str = str(details_raw) if details_raw else ''
                 display_data.append({
                     'Timestamp': timestamp,
                     'Action': f"{get_action_icon(log.get('action', ''))} {log.get('action', 'N/A')}",
                     'User': log.get('user_email', 'System'),
-                    'Entity': log.get('entity_type', 'N/A'),
-                    'Entity ID': log.get('entity_id', 'N/A')[:8] + '...' if log.get('entity_id') and len(log.get('entity_id', '')) > 8 else log.get('entity_id', 'N/A'),
+                    'Entity': entity_type,
+                    'Entity ID': (entity_id[:8] + '...') if entity_id and len(str(entity_id)) > 8 else entity_id,
                     'IP Address': log.get('ip_address', 'N/A'),
-                    'Details': log.get('details', '')[:50] + '...' if log.get('details') and len(log.get('details', '')) > 50 else log.get('details', 'N/A'),
+                    'Details': (details_str[:50] + '...') if len(details_str) > 50 else (details_str or 'N/A'),
                     'Full ID': log.get('id', ''),
-                    'Full Details': log.get('details', '')
+                    'Full Details': details_str
                 })
 
             df = pd.DataFrame(display_data)
@@ -203,14 +209,19 @@ def main():
 
                 with col2:
                     st.markdown("#### Context")
-                    st.write(f"**Entity Type:** {selected_log.get('entity_type', 'N/A')}")
-                    st.write(f"**Entity ID:** `{selected_log.get('entity_id', 'N/A')}`")
+                    st.write(f"**Entity Type:** {selected_log.get('resource_type') or selected_log.get('entity_type', 'N/A')}")
+                    st.write(f"**Entity ID:** `{selected_log.get('resource_id') or selected_log.get('entity_id', 'N/A')}`")
                     st.write(f"**IP Address:** {selected_log.get('ip_address', 'N/A')}")
                     st.write(f"**User Agent:** {selected_log.get('user_agent', 'N/A')[:50]}..." if selected_log.get('user_agent') else "N/A")
 
                 st.markdown("#### Details")
                 details = selected_log.get('details', 'No additional details')
-                st.code(details if details else 'No additional details', language='json')
+                if isinstance(details, (dict, list)):
+                    import json as _json
+                    details_str = _json.dumps(details, indent=2)
+                else:
+                    details_str = str(details) if details else 'No additional details'
+                st.code(details_str, language='json')
 
             # Export option
             st.markdown("---")

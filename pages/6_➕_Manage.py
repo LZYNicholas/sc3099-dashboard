@@ -6,24 +6,25 @@ Create and manage courses and sessions for attendance
 import streamlit as st
 import requests
 from datetime import datetime, timedelta
+from lib.auth_state import get_auth_headers, require_auth
+from lib.response_utils import bool_query, extract_items
 
 # Page configuration
 st.set_page_config(page_title="Manage - SAIV", page_icon="➕", layout="wide")
 
-# Check authentication
-if not st.session_state.get('authenticated', False):
-    st.warning("Please login from the main page to access this section.")
-    st.stop()
+require_auth()
 
 # API Configuration
 API_BASE_URL = "http://localhost:8000/api/v1"
 
+
+def to_api_datetime(value: datetime) -> str:
+    return value.astimezone().isoformat()
+
 def get_headers():
-    """Get authorization headers"""
-    token = st.session_state.get('access_token')
-    if token:
-        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    return {"Content-Type": "application/json"}
+    headers = get_auth_headers()
+    headers["Content-Type"] = "application/json"
+    return headers
 
 def api_post(endpoint: str, data: dict):
     """Make POST request to API"""
@@ -42,9 +43,16 @@ def api_post(endpoint: str, data: dict):
 def api_get(endpoint: str, params: dict = None):
     """Make GET request to API"""
     try:
+        query_params = None
+        if params is not None:
+            query_params = {
+                k: bool_query(v) if isinstance(v, bool) else v
+                for k, v in params.items()
+            }
+
         response = requests.get(
             f"{API_BASE_URL}{endpoint}",
-            params=params,
+            params=query_params,
             headers=get_headers(),
             timeout=10
         )
@@ -80,6 +88,13 @@ def api_put(endpoint: str, data: dict):
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
         return None
+
+
+def response_items(response: requests.Response):
+    try:
+        return extract_items(response.json())
+    except Exception:
+        return []
 
 st.title("➕ Course & Session Management")
 st.markdown("Create and manage courses and sessions for student attendance.")
@@ -160,10 +175,13 @@ with tab1:
             if not course_code or not course_name or not semester:
                 st.error("Please fill in all required fields (Course Code, Name, Semester)")
             else:
+                normalized_code = course_code.strip().upper()
+                normalized_semester = semester.strip()
+
                 course_data = {
-                    "code": course_code,
-                    "name": course_name,
-                    "semester": semester,
+                    "code": normalized_code,
+                    "name": course_name.strip(),
+                    "semester": normalized_semester,
                     "venue_name": venue_name or None,
                     "venue_latitude": venue_lat,
                     "venue_longitude": venue_lon,
@@ -196,7 +214,7 @@ with tab1:
 
     response = api_get("/courses/", {"limit": 50, "is_active": True})
     if response and response.status_code == 200:
-        courses = response.json().get('items', [])
+        courses = response_items(response)
         if courses:
             for course in courses:
                 with st.expander(f"📚 {course.get('code')} - {course.get('name')}"):
@@ -216,7 +234,7 @@ with tab1:
                         sessions_response = api_get("/sessions/", {"course_id": course.get('id'), "limit": 10})
                         course_sessions = []
                         if sessions_response and sessions_response.status_code == 200:
-                            course_sessions = sessions_response.json().get('items', [])
+                            course_sessions = response_items(sessions_response)
 
                         # Show warning if course has sessions
                         if course_sessions:
@@ -267,7 +285,7 @@ with tab2:
     response = api_get("/courses/", {"limit": 100, "is_active": True})
     courses = []
     if response and response.status_code == 200:
-        courses = response.json().get('items', [])
+        courses = response_items(response)
 
     if not courses:
         st.warning("No courses found. Please create a course first.")
@@ -413,10 +431,10 @@ with tab2:
                         "course_id": selected_course['id'],
                         "name": session_name,
                         "session_type": session_type,
-                        "scheduled_start": scheduled_start.isoformat(),
-                        "scheduled_end": scheduled_end.isoformat(),
-                        "checkin_opens_at": checkin_opens.isoformat(),
-                        "checkin_closes_at": checkin_closes.isoformat(),
+                        "scheduled_start": to_api_datetime(scheduled_start),
+                        "scheduled_end": to_api_datetime(scheduled_end),
+                        "checkin_opens_at": to_api_datetime(checkin_opens),
+                        "checkin_closes_at": to_api_datetime(checkin_closes),
                         "venue_name": session_venue or None,
                         "venue_latitude": session_lat,
                         "venue_longitude": session_lon,
@@ -454,10 +472,10 @@ with tab2:
     active_courses_resp = api_get("/courses/", {"limit": 100, "is_active": True})
     active_course_ids_list = set()
     if active_courses_resp and active_courses_resp.status_code == 200:
-        active_course_ids_list = {c['id'] for c in active_courses_resp.json().get('items', [])}
+        active_course_ids_list = {c['id'] for c in response_items(active_courses_resp)}
 
     if response and response.status_code == 200:
-        sessions = response.json().get('items', [])
+        sessions = response_items(response)
         if sessions:
             for session in sessions:
                 status_emoji = {
@@ -501,7 +519,7 @@ with tab3:
     response = api_get("/courses/", {"limit": 100, "is_active": True})
     courses = []
     if response and response.status_code == 200:
-        courses = response.json().get('items', [])
+        courses = response_items(response)
 
     if not courses:
         st.warning("No courses found. Please create a course first.")
@@ -630,26 +648,48 @@ with tab4:
     response = api_get("/sessions/", {"limit": 100})
     sessions = []
     if response and response.status_code == 200:
-        sessions = response.json().get('items', [])
+        sessions = response_items(response)
 
     # Also get active courses to check if session's course is still active
     active_courses_response = api_get("/courses/", {"limit": 100, "is_active": True})
     active_course_ids = set()
     if active_courses_response and active_courses_response.status_code == 200:
-        active_courses = active_courses_response.json().get('items', [])
+        active_courses = response_items(active_courses_response)
         active_course_ids = {c['id'] for c in active_courses}
 
     if not sessions:
         st.warning("No sessions found. Please create a session first.")
     else:
+        session_sort_order = {
+            'scheduled': 0,
+            'active': 1,
+            'closed': 2,
+            'cancelled': 3
+        }
+        sessions = sorted(
+            sessions,
+            key=lambda session: (
+                session_sort_order.get(session.get('status', ''), 99),
+                session.get('scheduled_start', '')
+            )
+        )
         session_options = {
             f"{s.get('course_code', 'N/A')} - {s.get('name')} ({s.get('status')})": s
             for s in sessions
         }
 
+        session_option_keys = list(session_options.keys())
+        default_session_index = 0
+        for index, key in enumerate(session_option_keys):
+            if session_options[key].get('status') == 'scheduled':
+                default_session_index = index
+                break
+
         selected_session_name = st.selectbox(
             "Select Session",
-            options=list(session_options.keys())
+            options=session_option_keys,
+            index=default_session_index,
+            help="Activate is only available for sessions that are currently scheduled and whose course is still active."
         )
         selected_session = session_options[selected_session_name]
 
@@ -839,7 +879,7 @@ with tab5:
     # Get inactive courses
     response = api_get("/courses/", {"limit": 100, "is_active": False})
     if response and response.status_code == 200:
-        deleted_courses = response.json().get('items', [])
+        deleted_courses = response_items(response)
         if deleted_courses:
             st.write(f"Found **{len(deleted_courses)}** deleted courses:")
             

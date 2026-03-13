@@ -7,24 +7,19 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from lib.auth_state import get_auth_headers, require_auth
+from lib.response_utils import bool_query, extract_items
 
 # Page configuration
 st.set_page_config(page_title="Courses - SAIV Dashboard", page_icon="📚", layout="wide")
 
 API_BASE_URL = "http://localhost:8000/api/v1"
 
-def check_auth():
-    """Check if user is authenticated"""
-    if not st.session_state.get('authenticated', False):
-        st.warning("Please login from the main page.")
-        st.stop()
-
 def get_headers():
-    """Get authorization headers"""
-    return {"Authorization": f"Bearer {st.session_state.get('access_token', '')}"}
+    return get_auth_headers()
 
 def main():
-    check_auth()
+    require_auth()
 
     st.title("📚 Course Analytics")
     st.markdown("View detailed statistics and analytics for your courses.")
@@ -33,14 +28,13 @@ def main():
     try:
         response = requests.get(
             f"{API_BASE_URL}/courses/",
-            params={"is_active": True, "limit": 100},
+            params={"is_active": bool_query(True), "limit": 100},
             headers=get_headers(),
             timeout=10
         )
 
         if response.status_code == 200:
-            courses_data = response.json()
-            courses = courses_data.get('items', []) if isinstance(courses_data, dict) else courses_data
+            courses = extract_items(response.json())
 
             if not courses:
                 st.info("No active courses found. Create a course in the Manage page.")
@@ -59,6 +53,10 @@ def main():
                 selected_course = next((c for c in courses if c['id'] == selected_course_id), None)
 
                 if selected_course:
+                    venue_lat = selected_course.get('venue_latitude')
+                    venue_lon = selected_course.get('venue_longitude')
+                    risk_threshold = selected_course.get('risk_threshold')
+
                     # Course Info Card
                     st.markdown("---")
                     col1, col2, col3 = st.columns(3)
@@ -69,12 +67,14 @@ def main():
                         st.write(f"**Semester:** {selected_course.get('semester', 'N/A')}")
                     with col2:
                         st.markdown("### 📍 Location")
-                        st.write(f"**Latitude:** {selected_course.get('geofence_latitude', 'Not set')}")
-                        st.write(f"**Longitude:** {selected_course.get('geofence_longitude', 'Not set')}")
+                        st.write(f"**Latitude:** {venue_lat if venue_lat is not None else 'Not set'}")
+                        st.write(f"**Longitude:** {venue_lon if venue_lon is not None else 'Not set'}")
                         st.write(f"**Radius:** {selected_course.get('geofence_radius_meters', 'Not set')}m")
                     with col3:
-                        st.markdown("### ⏰ Timing")
-                        st.write(f"**Late Threshold:** {selected_course.get('late_threshold_minutes', 15)} min")
+                        st.markdown("### 🔐 Security")
+                        st.write(f"**Risk Threshold:** {risk_threshold if risk_threshold is not None else 'Not set'}")
+                        st.write(f"**Face Recognition:** {'On' if selected_course.get('require_face_recognition') else 'Off'}")
+                        st.write(f"**Device Binding:** {'On' if selected_course.get('require_device_binding') else 'Off'}")
                         st.write(f"**Created:** {selected_course.get('created_at', 'Unknown')[:10] if selected_course.get('created_at') else 'Unknown'}")
 
                 # Fetch course statistics
@@ -155,7 +155,10 @@ def main():
                             st.info("No student attendance data available.")
 
                     else:
-                        st.warning("Could not load course statistics.")
+                        if stats_response.status_code == 404:
+                            st.info("Course statistics endpoint is not available on this backend branch yet.")
+                        else:
+                            st.warning("Could not load course statistics.")
 
                 except Exception as e:
                     st.warning(f"Could not load course statistics: {str(e)}")
@@ -171,7 +174,8 @@ def main():
                     )
 
                     if enroll_response.status_code == 200:
-                        enrollments = enroll_response.json()
+                        enroll_data = enroll_response.json()
+                        enrollments = enroll_data.get('students', enroll_data) if isinstance(enroll_data, dict) else enroll_data
                         if enrollments:
                             df = pd.DataFrame(enrollments)
                             display_cols = ['student_name', 'student_email', 'enrolled_at', 'status']
