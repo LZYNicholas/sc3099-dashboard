@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: streamlit_dashboard
+    static_configs:
+      - targets: ['dashboard:9101']

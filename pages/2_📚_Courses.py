@@ -7,13 +7,11 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from lib.auth_state import get_auth_headers, require_auth
+from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import bool_query, extract_items
 
 # Page configuration
 st.set_page_config(page_title="Courses - SAIV Dashboard", page_icon="📚", layout="wide")
-
-API_BASE_URL = "http://localhost:8000/api/v1"
 
 def get_headers():
     return get_auth_headers()
@@ -98,7 +96,8 @@ def main():
                         with col2:
                             st.metric("Total Enrollments", stats.get('total_enrollments', 0))
                         with col3:
-                            st.metric("Total Check-ins", stats.get('total_checkins', 0))
+                            total_checkins = stats.get('total_checkins', stats.get('total_checked_in', 0))
+                            st.metric("Total Check-ins", total_checkins)
                         with col4:
                             rate = stats.get('attendance_rate', 0) * 100
                             st.metric("Attendance Rate", f"{rate:.1f}%")
@@ -128,18 +127,34 @@ def main():
                             session_data = stats.get('sessions', [])
                             if session_data:
                                 df = pd.DataFrame(session_data)
-                                fig = px.bar(
-                                    df, x='name', y='checkin_count',
-                                    labels={'name': 'Session', 'checkin_count': 'Check-ins'},
-                                    color='status',
-                                    color_discrete_map={
-                                        'scheduled': '#6c757d',
-                                        'active': '#28a745',
-                                        'completed': '#1f77b4',
-                                        'cancelled': '#dc3545'
-                                    }
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
+                                # Accept multiple backend payload variants for session check-in count.
+                                y_col = None
+                                for candidate in ['checkin_count', 'checked_in', 'checked_in_count', 'total_checkins']:
+                                    if candidate in df.columns:
+                                        y_col = candidate
+                                        break
+
+                                x_col = 'name' if 'name' in df.columns else ('session_name' if 'session_name' in df.columns else None)
+
+                                if y_col is None or x_col is None:
+                                    st.info("Session breakdown data is available but missing expected fields.")
+                                    st.dataframe(df, use_container_width=True, hide_index=True)
+                                else:
+                                    if 'status' not in df.columns:
+                                        df['status'] = 'unknown'
+                                    fig = px.bar(
+                                        df, x=x_col, y=y_col,
+                                        labels={x_col: 'Session', y_col: 'Check-ins'},
+                                        color='status',
+                                        color_discrete_map={
+                                            'scheduled': '#6c757d',
+                                            'active': '#28a745',
+                                            'completed': '#1f77b4',
+                                            'cancelled': '#dc3545',
+                                            'unknown': '#9ca3af'
+                                        }
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
                             else:
                                 st.info("No session data available.")
 

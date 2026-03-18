@@ -7,13 +7,12 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-from lib.auth_state import get_auth_headers, require_auth
+from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 
 # Page configuration
 st.set_page_config(page_title="Overview - SAIV Dashboard", page_icon="📊", layout="wide")
-
-API_BASE_URL = "http://localhost:8000/api/v1"
 
 def get_headers():
     return get_auth_headers()
@@ -95,6 +94,55 @@ def main():
                     st.info("No risk data available.")
 
             st.markdown("---")
+
+            # Advanced analytics (Plotly + Matplotlib)
+            st.subheader("🧠 Advanced Analytics")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.caption("Daily check-ins with 3-day moving average (Matplotlib)")
+                daily_data = stats.get('trends', {}).get('checkins_by_day', [])
+                if daily_data:
+                    trend_df = pd.DataFrame(daily_data)
+                    trend_df['date'] = pd.to_datetime(trend_df['date'])
+                    trend_df = trend_df.sort_values('date')
+                    trend_df['count'] = trend_df['count'].astype(int)
+                    trend_df['ma_3'] = trend_df['count'].rolling(window=3, min_periods=1).mean()
+
+                    fig, ax = plt.subplots(figsize=(6, 3))
+                    ax.plot(trend_df['date'], trend_df['count'], marker='o', linewidth=1.8, label='Daily check-ins')
+                    ax.plot(trend_df['date'], trend_df['ma_3'], linestyle='--', linewidth=2, label='3-day MA')
+                    ax.set_xlabel('Date')
+                    ax.set_ylabel('Check-ins')
+                    ax.grid(alpha=0.25)
+                    ax.legend(loc='upper left', frameon=False)
+                    fig.autofmt_xdate()
+                    st.pyplot(fig, clear_figure=True)
+                else:
+                    st.info("Not enough trend data for moving average chart.")
+
+            with col2:
+                st.caption("Risk score histogram from recent check-ins")
+                recent = stats.get('recent_checkins', [])
+                if recent:
+                    recent_df = pd.DataFrame(recent)
+                    if 'risk_score' in recent_df.columns:
+                        risk_series = pd.to_numeric(recent_df['risk_score'], errors='coerce').dropna()
+                        if not risk_series.empty:
+                            fig = px.histogram(
+                                risk_series,
+                                nbins=10,
+                                labels={'value': 'Risk Score', 'count': 'Frequency'},
+                                color_discrete_sequence=['#ef4444']
+                            )
+                            fig.update_layout(showlegend=False, margin=dict(l=20, r=20, t=20, b=20))
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No recent risk scores available yet.")
+                    else:
+                        st.info("Risk scores are not available in recent check-ins.")
+                else:
+                    st.info("No recent check-ins to analyze.")
 
             # Recent Activity
             st.subheader("🕐 Recent Activity")

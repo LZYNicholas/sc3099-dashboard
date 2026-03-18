@@ -6,12 +6,10 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
-from lib.auth_state import get_auth_headers, require_auth
+from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 
 # Page configuration
 st.set_page_config(page_title="Audit Logs - SAIV Dashboard", page_icon="📋", layout="wide")
-
-API_BASE_URL = "http://localhost:8000/api/v1"
 
 def get_headers():
     return get_auth_headers()

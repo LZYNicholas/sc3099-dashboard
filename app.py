@@ -4,13 +4,41 @@ SAIV Instructor Dashboard - Main Application
 
 import streamlit as st
 import requests
+import streamlit.components.v1 as components
+import os
+import time
+from prometheus_client import Counter, Histogram, REGISTRY, start_http_server
 from lib.auth_state import (
+    API_BASE_URL,
     ALLOWED_DASHBOARD_ROLES,
     clear_auth_state,
     get_auth_headers,
     initialize_auth_state,
     save_auth_state,
 )
+
+_METRICS_STARTED = False
+
+
+def _get_or_create_counter(name: str, documentation: str, labelnames=()):
+    try:
+        return Counter(name, documentation, labelnames=labelnames)
+    except ValueError:
+        return REGISTRY._names_to_collectors[name]
+
+
+def _get_or_create_histogram(name: str, documentation: str, labelnames=()):
+    try:
+        return Histogram(name, documentation, labelnames=labelnames)
+    except ValueError:
+        return REGISTRY._names_to_collectors[name]
+
+
+LOGIN_ATTEMPTS = _get_or_create_counter('saiv_dashboard_login_attempts_total', 'Total dashboard login attempts')
+LOGIN_SUCCESS = _get_or_create_counter('saiv_dashboard_login_success_total', 'Total successful dashboard logins')
+LOGIN_FAILURE = _get_or_create_counter('saiv_dashboard_login_failure_total', 'Total failed dashboard logins')
+API_REQUESTS = _get_or_create_counter('saiv_dashboard_api_requests_total', 'Dashboard API requests', ['endpoint', 'status'])
+API_LATENCY = _get_or_create_histogram('saiv_dashboard_api_request_seconds', 'Dashboard API request latency', ['endpoint'])
 
 # Page configuration
 st.set_page_config(
@@ -19,9 +47,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# API Configuration
-API_BASE_URL = "http://localhost:8000/api/v1"
 
 # Custom CSS
 st.markdown("""
@@ -41,15 +66,34 @@ st.markdown("""
 initialize_auth_state()
 
 
+def ensure_metrics_server() -> None:
+    global _METRICS_STARTED
+    if _METRICS_STARTED:
+        return
+
+    try:
+        metrics_port = int(os.getenv('PROM_METRICS_PORT', '9101'))
+        start_http_server(metrics_port)
+    except Exception:
+        # Keep dashboard functional if metrics port is unavailable.
+        pass
+    finally:
+        _METRICS_STARTED = True
+
+
 def login(email: str, password: str) -> bool:
     """Authenticate user"""
+    LOGIN_ATTEMPTS.inc()
     try:
         # Use the shared auth endpoint, then gate dashboard access by role.
+        started = time.perf_counter()
         response = requests.post(
             f"{API_BASE_URL}/auth/login",
             json={"email": email, "password": password},
             timeout=10
         )
+        API_LATENCY.labels(endpoint='/auth/login').observe(time.perf_counter() - started)
+        API_REQUESTS.labels(endpoint='/auth/login', status=str(response.status_code)).inc()
 
         if response.status_code == 200:
             data = response.json()
@@ -57,18 +101,23 @@ def login(email: str, password: str) -> bool:
 
             # Check role
             if user.get('role') not in ALLOWED_DASHBOARD_ROLES:
+                LOGIN_FAILURE.inc()
                 st.error("Access denied. Only instructors, TAs, and admins can access this dashboard.")
                 return False
 
             # Extract JWT token from response body
             token = data.get('access_token')
-            if not token:
+            refresh_token = data.get('refresh_token')
+            if not token or not refresh_token:
+                LOGIN_FAILURE.inc()
                 st.error("No authentication token received from server.")
                 return False
 
-            save_auth_state(token, user)
+            save_auth_state(token, refresh_token, user)
+            LOGIN_SUCCESS.inc()
             return True
         else:
+            LOGIN_FAILURE.inc()
             try:
                 error = response.json().get('error', 'Login failed')
             except:
@@ -76,6 +125,7 @@ def login(email: str, password: str) -> bool:
             st.error(f"Login failed: {error}")
             return False
     except Exception as e:
+        LOGIN_FAILURE.inc()
         st.error(f"Connection error: {str(e)}")
         return False
 
@@ -85,8 +135,44 @@ def logout():
     clear_auth_state()
 
 
+def inject_login_autofill_hints() -> None:
+        """Set browser autofill hints for Streamlit login inputs."""
+        components.html(
+                """
+                <script>
+                (function () {
+                    const apply = () => {
+                        const email = window.parent.document.querySelector('input[aria-label="Email"]');
+                        const password = window.parent.document.querySelector('input[aria-label="Password"]');
+
+                        if (email) {
+                            email.setAttribute('autocomplete', 'username');
+                            email.setAttribute('name', 'username');
+                            email.setAttribute('type', 'email');
+                            email.setAttribute('inputmode', 'email');
+                        }
+
+                        if (password) {
+                            password.setAttribute('autocomplete', 'current-password');
+                            password.setAttribute('name', 'password');
+                        }
+                    };
+
+                    apply();
+                    const observer = new MutationObserver(apply);
+                    observer.observe(window.parent.document.body, { childList: true, subtree: true });
+                    setTimeout(() => observer.disconnect(), 10000);
+                })();
+                </script>
+                """,
+                height=0,
+                width=0,
+        )
+
+
 def login_page():
     """Display login page"""
+    inject_login_autofill_hints()
     st.markdown('<div class="main-header">📊 SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
     st.markdown("Please login with your instructor credentials.")
 
@@ -94,8 +180,16 @@ def login_page():
 
     with col2:
         with st.form("login_form"):
-            email = st.text_input("Email", placeholder="instructor@example.com")
-            password = st.text_input("Password", type="password")
+            email = st.text_input(
+                "Email",
+                placeholder="instructor@example.com",
+                autocomplete="email"
+            )
+            password = st.text_input(
+                "Password",
+                type="password",
+                autocomplete="current-password"
+            )
             submit = st.form_submit_button("Login", use_container_width=True)
 
             if submit:
@@ -177,6 +271,8 @@ def main_page():
 
 def main():
     """Main entry point"""
+    ensure_metrics_server()
+
     if not st.session_state.authenticated:
         login_page()
     else:

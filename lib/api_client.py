@@ -9,7 +9,18 @@ class APIClient:
     """Client for interacting with SAIV backend API"""
 
     def __init__(self, base_url: str = None):
-        self.base_url = base_url or os.getenv("BACKEND_URL", "http://localhost:8000/api/v1")
+        if base_url:
+            resolved = base_url
+        elif os.getenv("API_BASE_URL"):
+            resolved = os.getenv("API_BASE_URL")
+        elif os.getenv("BACKEND_URL"):
+            resolved = os.getenv("BACKEND_URL")
+        elif os.path.exists('/.dockerenv'):
+            resolved = "http://backend:8000/api/v1"
+        else:
+            resolved = "http://localhost:8000/api/v1"
+
+        self.base_url = resolved
         if not self.base_url.endswith("/api/v1"):
             self.base_url = self.base_url.rstrip("/") + "/api/v1"
         self.token = None
