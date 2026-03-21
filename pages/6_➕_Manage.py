@@ -1,4 +1,4 @@
-﻿"""
+"""
 SAIV Dashboard - Course & Session Management
 Create and manage courses and sessions for attendance
 """
@@ -32,6 +32,46 @@ def get_headers():
     headers["Content-Type"] = "application/json"
     return headers
 
+
+def current_token() -> str:
+    return st.session_state.get("access_token") or ""
+
+
+def clear_data_cache() -> None:
+    st.cache_data.clear()
+
+
+def _normalize_params(params: dict | None) -> tuple:
+    if not params:
+        return tuple()
+
+    normalized = [
+        (k, bool_query(v) if isinstance(v, bool) else v)
+        for k, v in params.items()
+    ]
+    return tuple(sorted(normalized, key=lambda x: x[0]))
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_get_json(endpoint: str, normalized_params: tuple, token: str):
+    query_params = {k: v for k, v in normalized_params} if normalized_params else None
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    response = requests.get(
+        f"{API_BASE_URL}{endpoint}",
+        params=query_params,
+        headers=headers,
+        timeout=8
+    )
+
+    payload = None
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    return response.status_code, payload, response.text
+
 def api_post(endpoint: str, data: dict):
     """Make POST request to API"""
     try:
@@ -47,21 +87,18 @@ def api_post(endpoint: str, data: dict):
         return None
 
 def api_get(endpoint: str, params: dict = None):
-    """Make GET request to API"""
+    """Make GET request to API (cached for hot-path list pages)."""
     try:
-        query_params = None
-        if params is not None:
-            query_params = {
-                k: bool_query(v) if isinstance(v, bool) else v
-                for k, v in params.items()
-            }
-
-        response = requests.get(
-            f"{API_BASE_URL}{endpoint}",
-            params=query_params,
-            headers=get_headers(),
-            timeout=10
+        status_code, payload, text = cached_get_json(
+            endpoint,
+            _normalize_params(params),
+            current_token()
         )
+        response = requests.Response()
+        response.status_code = status_code
+        response._content = (text or "").encode("utf-8", errors="ignore")
+        response.headers["Content-Type"] = "application/json"
+        response.json = lambda: payload  # type: ignore[assignment]
         return response
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
@@ -87,6 +124,19 @@ def api_put(endpoint: str, data: dict):
         response = requests.put(
             f"{API_BASE_URL}{endpoint}",
             json=data,
+            headers=get_headers(),
+            timeout=10
+        )
+        return response
+    except Exception as e:
+        st.error(f"Connection error: {str(e)}")
+        return None
+
+def api_delete(endpoint: str):
+    """Make DELETE request to API"""
+    try:
+        response = requests.delete(
+            f"{API_BASE_URL}{endpoint}",
             headers=get_headers(),
             timeout=10
         )
@@ -135,13 +185,25 @@ st.markdown("Create and manage courses and sessions for student attendance.")
 
 st.markdown("---")
 
-# Tabs for different management functions
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Create Course", "Create Session", "Manage Enrollments", "Session Status", "Recovery"])
+SECTIONS = [
+    "Create Course",
+    "Create Session",
+    "Manage Enrollments",
+    "Session Status",
+    "Recovery",
+    "Device Management",
+]
+active_section = st.radio(
+    "Section",
+    options=SECTIONS,
+    horizontal=True,
+    label_visibility="collapsed",
+)
 
 # ============================================================================
-# TAB 1: CREATE COURSE
+# SECTION: CREATE COURSE
 # ============================================================================
-with tab1:
+if active_section == "Create Course":
     st.subheader("Create New Course")
     st.markdown("Create a new course for attendance tracking.")
 
@@ -173,13 +235,13 @@ with tab1:
             )
             venue_lat = st.number_input(
                 "Venue Latitude",
-                value=1.2950,
+                value=1.448407,
                 format="%.6f",
                 help="GPS latitude of venue"
             )
             venue_lon = st.number_input(
                 "Venue Longitude",
-                value=103.7737,
+                value=103.831991,
                 format="%.6f",
                 help="GPS longitude of venue"
             )
@@ -228,6 +290,7 @@ with tab1:
 
                     if response is not None and response.status_code == 201:
                         result = response.json()
+                        clear_data_cache()
                         st.success("Course created successfully!")
                         st.json(result)
                     elif response is not None:
@@ -241,11 +304,21 @@ with tab1:
     st.subheader("Existing Courses")
 
     if st.button("Refresh Courses"):
+        clear_data_cache()
         st.rerun()
 
     response = api_get("/courses/", {"limit": 50, "is_active": True})
     if response is not None and response.status_code == 200:
         courses = response_items(response)
+        sessions_response = api_get("/sessions/", {"limit": 500})
+        sessions_by_course: dict[str, list] = {}
+        if sessions_response is not None and sessions_response.status_code == 200:
+            for session in response_items(sessions_response):
+                course_id = session.get("course_id")
+                if not course_id:
+                    continue
+                sessions_by_course.setdefault(course_id, []).append(session)
+
         if courses:
             for course in courses:
                 with st.expander(f"{course.get('code')} - {course.get('name')}"):
@@ -261,11 +334,7 @@ with tab1:
                     
                     # Delete button - only for active courses
                     if course.get('is_active'):
-                        # Check if course has any sessions
-                        sessions_response = api_get("/sessions/", {"course_id": course.get('id'), "limit": 10})
-                        course_sessions = []
-                        if sessions_response is not None and sessions_response.status_code == 200:
-                            course_sessions = response_items(sessions_response)
+                        course_sessions = sessions_by_course.get(course.get("id"), [])
 
                         # Show warning if course has sessions
                         if course_sessions:
@@ -289,6 +358,7 @@ with tab1:
                                 )
 
                                 if response.status_code == 204:
+                                    clear_data_cache()
                                     st.success("Course deleted (deactivated)!")
                                     st.rerun()
                                 else:
@@ -303,9 +373,9 @@ with tab1:
 
 
 # ============================================================================
-# TAB 2: CREATE SESSION
+# SECTION: CREATE SESSION
 # ============================================================================
-with tab2:
+if active_section == "Create Session":
     st.subheader("Create New Session")
     st.markdown("Create a new attendance session for a course.")
 
@@ -394,15 +464,17 @@ with tab2:
                     help="Leave empty to use course default"
                 )
             with col2:
+                _lat_val = selected_course.get('venue_latitude')
                 session_lat = st.number_input(
                     "Latitude",
-                    value=float(selected_course.get('venue_latitude', 1.2950)),
+                    value=float(_lat_val) if _lat_val is not None else None,
                     format="%.6f"
                 )
             with col3:
+                _lon_val = selected_course.get('venue_longitude')
                 session_lon = st.number_input(
                     "Longitude",
-                    value=float(selected_course.get('venue_longitude', 103.7737)),
+                    value=float(_lon_val) if _lon_val is not None else None,
                     format="%.6f"
                 )
 
@@ -477,6 +549,7 @@ with tab2:
 
                         if response is not None and response.status_code == 201:
                             result = response.json()
+                            clear_data_cache()
                             st.success("Session created successfully!")
                             st.json(result)
                         elif response is not None:
@@ -490,6 +563,7 @@ with tab2:
     st.subheader("Existing Sessions")
 
     if st.button("Refresh Sessions"):
+        clear_data_cache()
         st.rerun()
 
     # Get all sessions and active courses to check status
@@ -534,9 +608,9 @@ with tab2:
 
 
 # ============================================================================
-# TAB 3: MANAGE ENROLLMENTS
+# SECTION: MANAGE ENROLLMENTS
 # ============================================================================
-with tab3:
+if active_section == "Manage Enrollments":
     st.subheader("Manage Student Enrollments")
     st.markdown("Enroll students in courses.")
 
@@ -583,6 +657,7 @@ with tab3:
                         response = api_post("/admin/enrollments/", enroll_data)
 
                         if response is not None and response.status_code == 201:
+                            clear_data_cache()
                             st.success("Student enrolled successfully!")
                         elif response is not None:
                             error = response_error(response)
@@ -624,6 +699,7 @@ with tab3:
 
                         if response is not None and response.status_code == 200:
                             result = response.json()
+                            clear_data_cache()
                             st.success(f"Enrolled: {result.get('enrolled', 0)}, Already enrolled: {result.get('already_enrolled', 0)}, Not found: {result.get('not_found', 0)}")
                             if result.get('details'):
                                 st.json(result['details'])
@@ -657,9 +733,9 @@ with tab3:
 
 
 # ============================================================================
-# TAB 4: SESSION STATUS
+# SECTION: SESSION STATUS
 # ============================================================================
-with tab4:
+if active_section == "Session Status":
     st.subheader("Change Session Status")
     st.markdown("Activate, close, or cancel sessions.")
 
@@ -775,6 +851,7 @@ with tab4:
                         {"status": "active"}
                     )
                     if response is not None and response.status_code == 200:
+                        clear_data_cache()
                         st.success("Session activated!")
                         st.rerun()
                     else:
@@ -790,6 +867,7 @@ with tab4:
                         {"status": "closed"}
                     )
                     if response is not None and response.status_code == 200:
+                        clear_data_cache()
                         st.success("Session closed!")
                         st.rerun()
                     else:
@@ -805,6 +883,7 @@ with tab4:
                         {"status": "cancelled"}
                     )
                     if response is not None and response.status_code == 200:
+                        clear_data_cache()
                         st.success("Session cancelled!")
                         st.rerun()
                     else:
@@ -857,6 +936,7 @@ with tab4:
                     )
 
                     if response.status_code == 204:
+                        clear_data_cache()
                         st.success("Session deleted!")
                         st.rerun()
                     else:
@@ -871,13 +951,14 @@ with tab4:
 
 
 # ============================================================================
-# TAB 5: RECOVERY
+# SECTION: RECOVERY
 # ============================================================================
-with tab5:
+if active_section == "Recovery":
     st.subheader("Recover Deleted Courses")
     st.markdown("Reactivate courses that were previously deleted (soft-deleted).")
 
     if st.button("Refresh Deleted Courses"):
+        clear_data_cache()
         st.rerun()
 
     # Get inactive courses
@@ -904,6 +985,7 @@ with tab5:
                             {"is_active": True}
                         )
                         if restore_response is not None and restore_response.status_code == 200:
+                            clear_data_cache()
                             st.success("Course restored!")
                             st.rerun()
                         else:
@@ -914,4 +996,54 @@ with tab5:
     else:
         st.warning("Could not load deleted courses")
 
+if active_section == "Device Management":
+    st.divider()
+    st.header("📱 Device Management")
+    st.caption("Look up and revoke student devices. Revoking forces the student to re-login and bind their new device.")
+
+    device_search_email = st.text_input("Student Email", placeholder="student@example.com", key="device_search_email")
+
+    if device_search_email:
+        # First find the user by email
+        user_resp = api_get("/users/", params={"search": device_search_email, "limit": 5})
+        if user_resp and user_resp.ok:
+            users = response_items(user_resp)
+            matching = [u for u in users if u.get("email", "").lower() == device_search_email.strip().lower()]
+            if not matching:
+                st.warning(f"No user found with email: {device_search_email}")
+            else:
+                target_user = matching[0]
+                st.info(f"**{target_user.get('full_name')}** ({target_user.get('email')}) — Role: {target_user.get('role')}")
+
+                # Fetch devices for this user
+                devices_resp = api_get("/devices/", params={"user_id": target_user["id"], "limit": 50})
+                if devices_resp and devices_resp.ok:
+                    device_list = response_items(devices_resp)
+                    if not device_list:
+                        st.success("No devices registered for this user.")
+                    else:
+                        st.write(f"**{len(device_list)}** device(s) registered:")
+                        for dev in device_list:
+                            active_badge = "🟢 Active" if dev.get("is_active") else "🔴 Inactive"
+                            trust_badge = "✅ Trusted" if dev.get("is_trusted") else "⏳ Pending"
+                            with st.expander(f"{dev.get('device_name', 'Unknown device')} — {active_badge}"):
+                                c1, c2 = st.columns(2)
+                                c1.write(f"**Platform:** {dev.get('platform', 'N/A')}")
+                                c1.write(f"**Trust:** {trust_badge} ({dev.get('trust_score', 'low')})")
+                                c2.write(f"**First seen:** {dev.get('first_seen_at', 'N/A')[:19]}")
+                                c2.write(f"**Last seen:** {dev.get('last_seen_at', 'N/A')[:19]}")
+                                c1.write(f"**Check-ins:** {dev.get('total_checkins', 0)}")
+
+                                if st.button("🗑️ Revoke Device", key=f"revoke_dev_{dev['id']}", type="primary"):
+                                    del_resp = api_delete(f"/devices/{dev['id']}")
+                                    if del_resp is not None and del_resp.status_code == 204:
+                                        clear_data_cache()
+                                        st.success("Device revoked. Student must re-login to bind a new device.")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to revoke: {response_error(del_resp)}")
+                else:
+                    st.warning("Could not load devices for this user.")
+        else:
+            st.warning("Could not search users. Please check your permissions.")
 

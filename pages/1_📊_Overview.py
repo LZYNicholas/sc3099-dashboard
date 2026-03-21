@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
+from lib.response_utils import extract_items
 
 # Page configuration
 st.set_page_config(page_title="Overview - SAIV Dashboard", page_icon="📊", layout="wide")
@@ -164,13 +165,35 @@ def main():
                     timeout=10
                 )
                 if flagged_response.status_code == 200:
-                    flagged = flagged_response.json()
+                    flagged = extract_items(flagged_response.json())
                     if flagged:
                         for item in flagged:
-                            with st.expander(f"🔴 {item.get('student_name', 'Unknown')} - {item.get('session_name', 'Session')}"):
-                                st.write(f"**Risk Score:** {item.get('risk_score', 0):.2f}")
-                                st.write(f"**Flags:** {', '.join(item.get('flags', []))}")
-                                st.write(f"**Time:** {item.get('timestamp', 'Unknown')}")
+                            if not isinstance(item, dict):
+                                continue
+
+                            student_name = item.get('student_name', 'Unknown')
+                            session_name = item.get('session_name', 'Session')
+                            risk_score = float(item.get('risk_score') or 0)
+                            checked_in_at = item.get('checked_in_at') or item.get('timestamp') or 'Unknown'
+
+                            raw_flags = item.get('flags')
+                            if isinstance(raw_flags, list):
+                                flags = [str(f) for f in raw_flags if f]
+                            else:
+                                risk_factors = item.get('risk_factors')
+                                if isinstance(risk_factors, list):
+                                    flags = [
+                                        str(f.get('type'))
+                                        for f in risk_factors
+                                        if isinstance(f, dict) and f.get('type')
+                                    ]
+                                else:
+                                    flags = []
+
+                            with st.expander(f"🔴 {student_name} - {session_name}"):
+                                st.write(f"**Risk Score:** {risk_score:.2f}")
+                                st.write(f"**Flags:** {', '.join(flags) if flags else 'N/A'}")
+                                st.write(f"**Time:** {checked_in_at}")
                     else:
                         st.success("No flagged check-ins requiring review.")
                 else:

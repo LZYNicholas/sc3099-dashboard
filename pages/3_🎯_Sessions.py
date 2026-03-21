@@ -5,8 +5,10 @@ SAIV Instructor Dashboard - Sessions Monitoring Page
 import streamlit as st
 import requests
 import pandas as pd
+import os
+import json
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import bool_query, extract_items
@@ -20,9 +22,60 @@ except Exception:
 st.set_page_config(page_title="Sessions - SAIV Dashboard", page_icon="🎯", layout="wide")
 
 SG_TZ = ZoneInfo("Asia/Singapore")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
 def get_headers():
     return get_auth_headers()
+
+
+def current_token() -> str:
+    return st.session_state.get("access_token") or ""
+
+
+def clear_sessions_cache() -> None:
+    st.cache_data.clear()
+
+
+def _normalize_params(params: dict | None) -> tuple:
+    if not params:
+        return tuple()
+    normalized = [
+        (k, bool_query(v) if isinstance(v, bool) else v)
+        for k, v in params.items()
+    ]
+    return tuple(sorted(normalized, key=lambda x: x[0]))
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def cached_get_json(endpoint: str, normalized_params: tuple, token: str):
+    params = {k: v for k, v in normalized_params} if normalized_params else None
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    response = requests.get(
+        f"{API_BASE_URL}{endpoint}",
+        params=params,
+        headers=headers,
+        timeout=6
+    )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    return response.status_code, payload
+
+
+def parse_qr_session_id(payload: str, fallback_session_id: str) -> str:
+    try:
+        data = json.loads(payload)
+        if isinstance(data, dict) and data.get("sessionId"):
+            return str(data["sessionId"])
+    except Exception:
+        pass
+    return fallback_session_id
+
+
+def build_direct_attendance_link(session_id: str, qr_payload: str) -> str:
+    query = urlencode({"sessionId": session_id, "qr": qr_payload})
+    return f"{FRONTEND_BASE_URL}/attendance?{query}"
 
 def get_status_color(status):
     """Get color for status badge"""
@@ -101,6 +154,11 @@ def render_qr_block(qr_data, session_id):
         qr_url = f"https://quickchart.io/qr?size=300&text={quote(payload)}"
         st.image(qr_url, caption=f"Session QR - {session_id}", width=280)
 
+    linked_session_id = parse_qr_session_id(payload, session_id)
+    attendance_link = build_direct_attendance_link(linked_session_id, payload)
+    st.caption("Direct attendance link (equivalent to scanning this QR)")
+    st.code(attendance_link)
+
 
 def update_session_status(session_id, status):
     try:
@@ -108,9 +166,10 @@ def update_session_status(session_id, status):
             f"{API_BASE_URL}/admin/sessions/{session_id}/status",
             json={"status": status},
             headers={**get_headers(), "Content-Type": "application/json"},
-            timeout=10
+            timeout=6
         )
         if response.status_code == 200:
+            clear_sessions_cache()
             return True, None
         try:
             return False, response.json().get('detail', 'Failed to update session status')
@@ -128,13 +187,12 @@ def main():
 
     # Fetch active courses for filter (only show active courses)
     try:
-        courses_response = requests.get(
-            f"{API_BASE_URL}/courses/",
-            params={"is_active": bool_query(True), "limit": 100},
-            headers=get_headers(),
-            timeout=10
+        courses_status, courses_payload = cached_get_json(
+            "/courses/",
+            _normalize_params({"is_active": True, "limit": 100}),
+            current_token(),
         )
-        courses = extract_items(courses_response.json()) if courses_response.status_code == 200 else []
+        courses = extract_items(courses_payload) if courses_status == 200 else []
     except:
         courses = []
 
@@ -157,6 +215,7 @@ def main():
     with col3:
         st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
         if st.button("🔄 Refresh", use_container_width=True, type="secondary"):
+            clear_sessions_cache()
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -164,15 +223,18 @@ def main():
 
     # Fetch sessions
     try:
-        url = f"{API_BASE_URL}/sessions/"
         params = {"limit": 100}
         if course_filter != 'All':
             params['course_id'] = course_filter
 
-        response = requests.get(url, params=params, headers=get_headers(), timeout=10)
+        status_code, sessions_payload = cached_get_json(
+            "/sessions/",
+            _normalize_params(params),
+            current_token(),
+        )
 
-        if response.status_code == 200:
-            sessions_data = response.json()
+        if status_code == 200:
+            sessions_data = sessions_payload
             sessions = sessions_data.get('items', []) if isinstance(sessions_data, dict) else sessions_data
 
             # Apply status filter
@@ -341,19 +403,9 @@ def main():
                                 state_key = f"session_qr_{session['id']}"
                                 qr_payload = st.session_state.get(state_key)
 
-                                # Auto-load QR for instructors so they can project it immediately.
-                                ttl = int(qr_payload.get('qr_ttl_seconds', 0)) if isinstance(qr_payload, dict) else 0
-                                if not qr_payload or ttl <= 0:
-                                    ok, result = fetch_session_qr(session['id'])
-                                    if ok:
-                                        qr_payload = result
-                                        st.session_state[state_key] = result
-                                    else:
-                                        st.error(result or "Could not generate QR")
-
                                 btn_col1, btn_col2 = st.columns([1, 3])
                                 with btn_col1:
-                                    if st.button("Regenerate QR", key=f"qr_btn_{session['id']}", use_container_width=True):
+                                    if st.button("Generate / Refresh QR", key=f"qr_btn_{session['id']}", use_container_width=True):
                                         ok, result = fetch_session_qr(session['id'])
                                         if ok:
                                             qr_payload = result
@@ -418,7 +470,11 @@ def main():
             )
 
             if selected_session_id:
-                show_session_details(selected_session_id, sessions, active_course_ids)
+                load_details = st.checkbox("Load selected session details", key="load_selected_session_details")
+                if load_details:
+                    show_session_details(selected_session_id, sessions, active_course_ids)
+                else:
+                    st.caption("Details are loaded on demand to keep page navigation fast.")
 
         else:
             st.error("Failed to load sessions.")
@@ -430,14 +486,14 @@ def main():
 def show_session_checkins(session_id):
     """Display check-ins for a session"""
     try:
-        response = requests.get(
-            f"{API_BASE_URL}/checkins/session/{session_id}",
-            headers=get_headers(),
-            timeout=10
+        response_code, payload = cached_get_json(
+            f"/checkins/session/{session_id}",
+            tuple(),
+            current_token(),
         )
 
-        if response.status_code == 200:
-            checkins = response.json()
+        if response_code == 200:
+            checkins = payload if isinstance(payload, list) else []
             if checkins:
                 st.markdown("#### Check-ins")
                 for ci in checkins:
@@ -498,14 +554,14 @@ def show_session_details(session_id, sessions, active_course_ids=None):
 
     # Fetch session statistics
     try:
-        stats_response = requests.get(
-            f"{API_BASE_URL}/stats/sessions/{session_id}",
-            headers=get_headers(),
-            timeout=10
+        stats_response_code, stats_payload = cached_get_json(
+            f"/stats/sessions/{session_id}",
+            tuple(),
+            current_token(),
         )
 
-        if stats_response.status_code == 200:
-            stats = stats_response.json()
+        if stats_response_code == 200:
+            stats = stats_payload if isinstance(stats_payload, dict) else {}
 
             st.markdown("---")
             st.markdown("#### Statistics")

@@ -11,7 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 import sys
@@ -71,7 +71,13 @@ def fetch_all_checkins(headers: dict) -> pd.DataFrame:
     rows = []
     limit = 200
     offset = 0
+    max_pages = 100
+    page_count = 0
     while True:
+        page_count += 1
+        if page_count > max_pages:
+            break
+
         resp = requests.get(
             f"{API_BASE_URL}/checkins/?limit={limit}&offset={offset}",
             headers=headers,
@@ -80,7 +86,16 @@ def fetch_all_checkins(headers: dict) -> pd.DataFrame:
         if resp.status_code != 200:
             break
         data = resp.json()
-        items = data.get("items", [])
+        if isinstance(data, dict):
+            items = data.get("items", [])
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+
+        if not isinstance(items, list):
+            break
+
         rows.extend(items)
         if len(items) < limit:
             break
@@ -195,7 +210,7 @@ def main():
 
     # ── Time range picker ─────────────────────────────────────────────────────
     days = st.sidebar.selectbox("Time Range", [7, 14, 30, 90], index=0, format_func=lambda x: f"Last {x} days")
-    end_ts = datetime.utcnow()
+    end_ts = datetime.now(timezone.utc)
     start_ts = end_ts - timedelta(days=days)
 
     # ── Fetch check-in data ───────────────────────────────────────────────────
@@ -208,7 +223,8 @@ def main():
 
     # Filter to selected time range
     if "checked_in_at" in df_all.columns:
-        df = df_all[df_all["checked_in_at"] >= pd.Timestamp(start_ts, tz="UTC")].copy()
+        start_utc = pd.Timestamp(start_ts).tz_convert("UTC")
+        df = df_all[df_all["checked_in_at"] >= start_utc].copy()
     else:
         df = df_all.copy()
 
@@ -405,7 +421,7 @@ def main():
     if risk_range:
         prom_available = True
         ts_rows = [
-            {"time": datetime.utcfromtimestamp(float(v[0])), "avg_risk": float(v[1])}
+            {"time": datetime.fromtimestamp(float(v[0]), tz=timezone.utc), "avg_risk": float(v[1])}
             for series in risk_range for v in series["values"]
             if v[1] not in ("NaN", "Inf", "-Inf")
         ]
