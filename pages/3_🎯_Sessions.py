@@ -125,7 +125,7 @@ def fetch_session_qr(session_id):
         response = requests.get(
             f"{API_BASE_URL}/admin/sessions/{session_id}/qr",
             headers=get_headers(),
-            timeout=10
+            timeout=5
         )
         if response.status_code == 200:
             return True, response.json()
@@ -166,7 +166,7 @@ def update_session_status(session_id, status):
             f"{API_BASE_URL}/admin/sessions/{session_id}/status",
             json={"status": status},
             headers={**get_headers(), "Content-Type": "application/json"},
-            timeout=6
+            timeout=4
         )
         if response.status_code == 200:
             clear_sessions_cache()
@@ -307,16 +307,18 @@ def main():
                                 if st.button("▶ Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True, type="primary"):
                                     ok, error = update_session_status(session['id'], 'active')
                                     if ok:
+                                        session['status'] = 'active'
                                         st.success("Session activated.")
-                                        st.rerun()
+                                        st.caption("Status updated. Click Refresh if list does not update automatically.")
                                     else:
                                         st.error(error or "Failed to activate session.")
                             with action_col2:
                                 if st.button("✖ Cancel", key=f"cancel_{session['id']}", use_container_width=True):
                                     ok, error = update_session_status(session['id'], 'cancelled')
                                     if ok:
+                                        session['status'] = 'cancelled'
                                         st.success("Session cancelled.")
-                                        st.rerun()
+                                        st.caption("Status updated. Click Refresh if list does not update automatically.")
                                     else:
                                         st.error(error or "Failed to cancel session.")
 
@@ -372,8 +374,9 @@ def main():
                             if st.button("Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True):
                                 ok, error = update_session_status(session['id'], 'active')
                                 if ok:
+                                    session['status'] = 'active'
                                     st.success("Session activated.")
-                                    st.rerun()
+                                    st.caption("Status updated. Click Refresh if list does not update automatically.")
                                 else:
                                     st.error(error or "Failed to activate session.")
                         with action_col2:
@@ -381,8 +384,9 @@ def main():
                             if st.button("Close", key=f"close_{session['id']}", disabled=not can_close, use_container_width=True):
                                 ok, error = update_session_status(session['id'], 'closed')
                                 if ok:
+                                    session['status'] = 'closed'
                                     st.success("Session closed.")
-                                    st.rerun()
+                                    st.caption("Status updated. Click Refresh if list does not update automatically.")
                                 else:
                                     st.error(error or "Failed to close session.")
                         with action_col3:
@@ -390,8 +394,9 @@ def main():
                             if st.button("Cancel", key=f"cancel_{session['id']}", disabled=not can_cancel, use_container_width=True):
                                 ok, error = update_session_status(session['id'], 'cancelled')
                                 if ok:
+                                    session['status'] = 'cancelled'
                                     st.success("Session cancelled.")
-                                    st.rerun()
+                                    st.caption("Status updated. Click Refresh if list does not update automatically.")
                                 else:
                                     st.error(error or "Failed to cancel session.")
 
