@@ -1,5 +1,4 @@
-"""
-SAIV Instructor Dashboard - Audit Logs Page
+"""SAIV Instructor Dashboard - Audit Logs Page
 """
 
 import streamlit as st
@@ -9,38 +8,69 @@ from datetime import datetime, timedelta
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 
 # Page configuration
-st.set_page_config(page_title="Audit Logs - SAIV Dashboard", page_icon="📋", layout="wide")
+st.set_page_config(page_title="Audit Logs - SAIV Dashboard", layout="wide")
+
 
 def get_headers():
     return get_auth_headers()
 
-def get_action_icon(action):
-    """Get icon for action type"""
-    icons = {
-        'login': '🔐',
-        'logout': '🚪',
-        'checkin': '✅',
-        'create': '➕',
-        'update': '✏️',
-        'delete': '🗑️',
-        'enroll': '📝',
-        'review': '👁️',
-        'export': '📥',
-        'flag': '🚩'
-    }
-    for key, icon in icons.items():
-        if key in action.lower():
-            return icon
-    return '📌'
+
+def get_severity(action: str) -> str:
+    """Classify audit action into severity level for color-coding."""
+    action_lower = action.lower()
+    if any(k in action_lower for k in ('security_violation', 'login_failed', 'rejected')):
+        return 'critical'
+    if any(k in action_lower for k in ('flag', 'delete', 'removed')):
+        return 'warning'
+    if any(k in action_lower for k in ('login_success', 'approved', 'created', 'enrolled', 'face_enrolled')):
+        return 'success'
+    return 'info'
+
+
+SEVERITY_COLORS = {
+    'critical': '#dc3545',
+    'warning': '#ffc107',
+    'success': '#28a745',
+    'info': '#6c757d',
+}
+
 
 def main():
     require_auth()
 
-    st.title("📋 Audit Logs")
+    st.title("Audit Logs")
     st.markdown("View system audit trail and activity logs.")
 
+    # Audit Summary Widget
+    try:
+        summary_resp = requests.get(
+            f"{API_BASE_URL}/audit/summary",
+            params={'days': 7},
+            headers=get_headers(),
+            timeout=10
+        )
+        if summary_resp.status_code == 200:
+            summary = summary_resp.json()
+            st.subheader("7-Day Audit Summary")
+            scol1, scol2 = st.columns([1, 2])
+            with scol1:
+                st.metric("Total Events (7d)", summary.get('total_logs', 0))
+                st.metric("Period (days)", summary.get('period_days', 7))
+            with scol2:
+                by_action = summary.get('by_action', {})
+                if by_action:
+                    action_df = pd.DataFrame(
+                        [{'Action': k, 'Count': v} for k, v in by_action.items()]
+                    ).sort_values('Count', ascending=False)
+                    st.bar_chart(action_df.set_index('Action'))
+                else:
+                    st.info("No actions recorded in the last 7 days.")
+            st.markdown("---")
+    except Exception:
+        pass  # Summary endpoint may not exist yet
+
     # Filters
-    st.subheader("🔍 Filters")
+    st.subheader("Filters")
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -54,7 +84,6 @@ def main():
         )
 
     with col2:
-        # Date range
         date_range = st.selectbox(
             "Date Range",
             options=['Today', 'Last 7 days', 'Last 30 days', 'Last 90 days', 'All time'],
@@ -87,8 +116,8 @@ def main():
     with col1:
         search_query = st.text_input("Search (user email, entity ID, or details)", placeholder="Enter search term...")
     with col2:
-        st.write("")  # Spacing
-        search_btn = st.button("🔍 Search", use_container_width=True)
+        st.write("")
+        search_btn = st.button("Search", use_container_width=True)
 
     st.markdown("---")
 
@@ -120,7 +149,7 @@ def main():
                 return
 
             # Summary statistics
-            st.subheader("📊 Summary")
+            st.subheader("Summary")
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
@@ -136,14 +165,17 @@ def main():
                 most_common = max(action_counts, key=action_counts.get) if action_counts else 'N/A'
                 st.metric("Most Common Action", most_common)
             with col4:
-                # Count flagged or suspicious
                 suspicious = sum(1 for log in logs if 'flag' in log.get('action', '').lower() or 'suspicious' in log.get('details', '').lower())
                 st.metric("Flagged Events", suspicious)
 
             st.markdown("---")
 
-            # Logs Table
-            st.subheader("📜 Audit Trail")
+            # Severity Legend
+            st.subheader("Audit Trail")
+            legend_cols = st.columns(4)
+            for i, (sev, color) in enumerate(SEVERITY_COLORS.items()):
+                with legend_cols[i]:
+                    st.markdown(f'<span style="color:{color};font-weight:bold;">&#9679;</span> {sev.title()}', unsafe_allow_html=True)
 
             # Prepare data for display
             display_data = []
@@ -163,9 +195,14 @@ def main():
                     details_str = str(details_raw)
                 else:
                     details_str = str(details_raw) if details_raw else ''
+
+                action_raw = log.get('action', 'N/A')
+                severity = get_severity(action_raw)
+
                 display_data.append({
                     'Timestamp': timestamp,
-                    'Action': f"{get_action_icon(log.get('action', ''))} {log.get('action', 'N/A')}",
+                    'Severity': severity.title(),
+                    'Action': action_raw,
                     'User': log.get('user_email', 'System'),
                     'Entity': entity_type,
                     'Entity ID': (entity_id[:8] + '...') if entity_id and len(str(entity_id)) > 8 else entity_id,
@@ -176,15 +213,20 @@ def main():
                 })
 
             df = pd.DataFrame(display_data)
+
+            def severity_to_color(val):
+                return f"color: {SEVERITY_COLORS.get(val.lower(), '#6c757d')}"
+
+            styled_df = df.drop(columns=['Full ID', 'Full Details'])
             st.dataframe(
-                df.drop(columns=['Full ID', 'Full Details']),
+                styled_df.style.map(severity_to_color, subset=['Severity']),
                 use_container_width=True,
                 hide_index=True
             )
 
             # Detailed View
             st.markdown("---")
-            st.subheader("🔎 Detailed View")
+            st.subheader("Detailed View")
 
             log_options = {i: f"{d['Timestamp']} - {d['Action']} by {d['User']}" for i, d in enumerate(display_data)}
             selected_idx = st.selectbox(
@@ -229,7 +271,7 @@ def main():
             with col2:
                 csv = df.drop(columns=['Full ID', 'Full Details']).to_csv(index=False)
                 st.download_button(
-                    "📥 Download CSV",
+                    "Download CSV",
                     csv,
                     "audit_logs.csv",
                     "text/csv",
@@ -238,7 +280,7 @@ def main():
             with col3:
                 json_data = pd.DataFrame(logs).to_json(orient='records', indent=2)
                 st.download_button(
-                    "📥 Download JSON",
+                    "Download JSON",
                     json_data,
                     "audit_logs.json",
                     "application/json",

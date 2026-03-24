@@ -1,5 +1,4 @@
-"""
-SAIV Instructor Dashboard - Courses Analytics Page
+"""SAIV Instructor Dashboard - Courses Analytics Page
 """
 
 import streamlit as st
@@ -11,7 +10,7 @@ from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import bool_query, extract_items
 
 # Page configuration
-st.set_page_config(page_title="Courses - SAIV Dashboard", page_icon="📚", layout="wide")
+st.set_page_config(page_title="Courses - SAIV Dashboard", layout="wide")
 
 def get_headers():
     return get_auth_headers()
@@ -19,7 +18,7 @@ def get_headers():
 def main():
     require_auth()
 
-    st.title("📚 Course Analytics")
+    st.title("Course Analytics")
     st.markdown("View detailed statistics and analytics for your courses.")
 
     # Fetch only active courses (no analytics for deleted courses)
@@ -59,17 +58,17 @@ def main():
                     st.markdown("---")
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.markdown("### 📖 Course Details")
+                        st.markdown("### Course Details")
                         st.write(f"**Code:** {selected_course.get('code', 'N/A')}")
                         st.write(f"**Name:** {selected_course.get('name', 'N/A')}")
                         st.write(f"**Semester:** {selected_course.get('semester', 'N/A')}")
                     with col2:
-                        st.markdown("### 📍 Location")
+                        st.markdown("### Location")
                         st.write(f"**Latitude:** {venue_lat if venue_lat is not None else 'Not set'}")
                         st.write(f"**Longitude:** {venue_lon if venue_lon is not None else 'Not set'}")
                         st.write(f"**Radius:** {selected_course.get('geofence_radius_meters', 'Not set')}m")
                     with col3:
-                        st.markdown("### 🔐 Security")
+                        st.markdown("### Security")
                         st.write(f"**Risk Threshold:** {risk_threshold if risk_threshold is not None else 'Not set'}")
                         st.write(f"**Face Recognition:** {'On' if selected_course.get('require_face_recognition') else 'Off'}")
                         st.write(f"**Device Binding:** {'On' if selected_course.get('require_device_binding') else 'Off'}")
@@ -87,7 +86,7 @@ def main():
                         stats = stats_response.json()
 
                         st.markdown("---")
-                        st.subheader("📊 Course Statistics")
+                        st.subheader("Course Statistics")
 
                         # Metrics row
                         col1, col2, col3, col4 = st.columns(4)
@@ -108,7 +107,7 @@ def main():
                         col1, col2 = st.columns(2)
 
                         with col1:
-                            st.subheader("📈 Attendance Trend")
+                            st.subheader("Attendance Trend")
                             trend_data = stats.get('attendance_trend', [])
                             if trend_data:
                                 df = pd.DataFrame(trend_data)
@@ -123,7 +122,7 @@ def main():
                                 st.info("No attendance trend data available.")
 
                         with col2:
-                            st.subheader("🎯 Session Breakdown")
+                            st.subheader("Session Breakdown")
                             session_data = stats.get('sessions', [])
                             if session_data:
                                 df = pd.DataFrame(session_data)
@@ -160,7 +159,7 @@ def main():
 
                         # Student Performance Table
                         st.markdown("---")
-                        st.subheader("👥 Student Attendance")
+                        st.subheader("Student Attendance")
                         student_data = stats.get('student_attendance', [])
                         if student_data:
                             df = pd.DataFrame(student_data)
@@ -180,7 +179,7 @@ def main():
 
                 # Enrolled Students Section
                 st.markdown("---")
-                st.subheader("📋 Enrolled Students")
+                st.subheader("Enrolled Students")
                 try:
                     enroll_response = requests.get(
                         f"{API_BASE_URL}/enrollments/course/{selected_course_id}",

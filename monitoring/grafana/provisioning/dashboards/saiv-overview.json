@@ -1,0 +1,351 @@
+{
+    "annotations": { "list": [] },
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 0,
+    "id": 1,
+    "links": [],
+    "liveNow": false,
+    "panels": [
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "mode": "palette-classic" },
+                    "custom": {
+                        "drawStyle": "line",
+                        "fillOpacity": 0,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "showPoints": "auto",
+                        "spanNulls": false
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            { "color": "green", "value": null },
+                            { "color": "red", "value": 80 }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+            "id": 2,
+            "options": {
+                "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+                "tooltip": { "mode": "single", "sort": "none" }
+            },
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "editorMode": "builder",
+                    "expr": "rate(saiv_checkin_total[5m])",
+                    "legendFormat": "{{status}}",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "Check-in Rate",
+            "type": "timeseries"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "mode": "palette-classic" },
+                    "custom": {
+                        "drawStyle": "line",
+                        "fillOpacity": 0,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "showPoints": "auto",
+                        "spanNulls": false
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            { "color": "green", "value": null },
+                            { "color": "red", "value": 0.5 }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+            "id": 4,
+            "options": {
+                "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+                "tooltip": { "mode": "single", "sort": "none" }
+            },
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "editorMode": "builder",
+                    "expr": "rate(saiv_checkin_total{status=\"flagged\"}[5m]) / clamp_min(rate(saiv_checkin_total[5m]), 0.001)",
+                    "legendFormat": "Flagged/Total Ratio",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "Flagged vs Approved Ratio",
+            "type": "timeseries"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "mode": "palette-classic" },
+                    "unit": "s",
+                    "custom": {
+                        "drawStyle": "line",
+                        "fillOpacity": 10,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "showPoints": "auto",
+                        "spanNulls": false
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            { "color": "green", "value": null },
+                            { "color": "yellow", "value": 0.5 },
+                            { "color": "red", "value": 2 }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+            "id": 6,
+            "options": {
+                "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+                "tooltip": { "mode": "single", "sort": "none" }
+            },
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "histogram_quantile(0.95, sum(rate(saiv_http_request_duration_seconds_bucket[5m])) by (le))",
+                    "legendFormat": "p95",
+                    "range": true,
+                    "refId": "A"
+                },
+                {
+                    "datasource": "Prometheus",
+                    "expr": "histogram_quantile(0.50, sum(rate(saiv_http_request_duration_seconds_bucket[5m])) by (le))",
+                    "legendFormat": "p50",
+                    "range": true,
+                    "refId": "B"
+                }
+            ],
+            "title": "HTTP Latency (p95)",
+            "type": "timeseries"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "mode": "palette-classic" },
+                    "custom": {
+                        "drawStyle": "line",
+                        "fillOpacity": 10,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "showPoints": "auto",
+                        "spanNulls": false
+                    },
+                    "min": 0,
+                    "max": 1,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            { "color": "green", "value": null },
+                            { "color": "yellow", "value": 0.3 },
+                            { "color": "orange", "value": 0.5 },
+                            { "color": "red", "value": 0.7 }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+            "id": 8,
+            "options": {
+                "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+                "tooltip": { "mode": "single", "sort": "none" }
+            },
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "histogram_quantile(0.95, sum(rate(saiv_checkin_risk_score_bucket[5m])) by (le))",
+                    "legendFormat": "p95 Risk Score",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "Risk Score Distribution (p95)",
+            "type": "timeseries"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": { "unit": "reqps" },
+                "overrides": []
+            },
+            "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+            "id": 10,
+            "options": {
+                "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+                "tooltip": { "mode": "single", "sort": "none" }
+            },
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "sum(rate(saiv_http_request_duration_seconds_count[5m])) by (method)",
+                    "legendFormat": "{{method}}",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "HTTP Request Rate by Method",
+            "type": "timeseries"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": { "unit": "short" },
+                "overrides": []
+            },
+            "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 },
+            "id": 12,
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "sum(saiv_login_total)",
+                    "legendFormat": "Total",
+                    "refId": "A"
+                }
+            ],
+            "title": "Total Login Attempts",
+            "type": "stat"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            { "color": "green", "value": null },
+                            { "color": "yellow", "value": 5 },
+                            { "color": "red", "value": 20 }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": { "h": 4, "w": 6, "x": 18, "y": 16 },
+            "id": 14,
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "sum(saiv_login_total{status=\"failure\"}) or vector(0)",
+                    "legendFormat": "Failed",
+                    "refId": "A"
+                }
+            ],
+            "title": "Failed Logins",
+            "type": "stat"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "min": 0,
+                    "max": 50,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            { "color": "green", "value": null },
+                            { "color": "yellow", "value": 20 },
+                            { "color": "red", "value": 40 }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": { "h": 4, "w": 6, "x": 12, "y": 20 },
+            "id": 16,
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "saiv_active_sessions",
+                    "legendFormat": "Active",
+                    "refId": "A"
+                }
+            ],
+            "title": "Active Sessions",
+            "type": "gauge"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": { "defaults": {}, "overrides": [] },
+            "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+            "id": 18,
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "sum by (status) (saiv_checkin_total)",
+                    "legendFormat": "{{status}}",
+                    "refId": "A"
+                }
+            ],
+            "title": "Check-in Total by Status",
+            "type": "piechart"
+        },
+        {
+            "datasource": "Prometheus",
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "reqps",
+                    "custom": { "drawStyle": "bars", "fillOpacity": 50 }
+                },
+                "overrides": []
+            },
+            "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+            "id": 20,
+            "targets": [
+                {
+                    "datasource": "Prometheus",
+                    "expr": "sum(rate(saiv_http_request_duration_seconds_count{status=~\"4..|5..\"}[5m])) by (route, status)",
+                    "legendFormat": "{{route}} {{status}}",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "HTTP Errors by Route",
+            "type": "timeseries"
+        }
+    ],
+    "schemaVersion": 37,
+    "style": "dark",
+    "tags": ["saiv", "attendance"],
+    "templating": { "list": [] },
+    "time": { "from": "now-6h", "to": "now" },
+    "timepicker": {},
+    "timezone": "Asia/Singapore",
+    "title": "SAIV Observability Dashboard",
+    "uid": "saiv-dashboard-v1",
+    "refresh": "30s",
+    "version": 1
+}

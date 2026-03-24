@@ -1,5 +1,4 @@
-"""
-SAIV Instructor Dashboard - Main Application
+"""SAIV Instructor Dashboard - Main Application
 """
 
 import streamlit as st
@@ -43,7 +42,6 @@ API_LATENCY = _get_or_create_histogram('saiv_dashboard_api_request_seconds', 'Da
 # Page configuration
 st.set_page_config(
     page_title="SAIV Instructor Dashboard",
-    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -173,7 +171,7 @@ def inject_login_autofill_hints() -> None:
 def login_page():
     """Display login page"""
     inject_login_autofill_hints()
-    st.markdown('<div class="main-header">📊 SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
     st.markdown("Please login with your instructor credentials.")
 
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -206,7 +204,7 @@ def main_page():
     """Display main dashboard"""
     # Sidebar
     with st.sidebar:
-        st.markdown("### 👤 User Info")
+        st.markdown("### User Info")
         user = st.session_state.user
         st.write(f"**{user.get('full_name', 'User')}**")
         st.write(f"Role: {user.get('role', 'unknown').title()}")
@@ -214,28 +212,28 @@ def main_page():
 
         st.markdown("---")
 
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("Logout", use_container_width=True):
             logout()
             st.rerun()
 
     # Main content
-    st.markdown('<div class="main-header">📊 SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
 
     st.markdown("""
     ### Welcome to the Instructor Dashboard
 
     Use the sidebar to navigate between pages:
 
-    - **📊 Overview** - View system statistics
-    - **📚 Courses** - Course analytics
-    - **🎯 Sessions** - Monitor sessions and check-ins
-    - **📋 Audit Logs** - View audit trail
-    - **📥 Reports** - Export data
-    - **➕ Manage** - Create courses and sessions
+    - **Overview** - View system statistics
+    - **Courses** - Course analytics
+    - **Sessions** - Monitor sessions and check-ins
+    - **Audit Logs** - View audit trail
+    - **Reports** - Export data
+    - **Manage** - Create courses and sessions
 
     ### Quick Start
 
-    1. Go to **➕ Manage** to create a course
+    1. Go to **Manage** to create a course
     2. Create a session within that course
     3. Enroll students in the course
     4. Set the session to **Active** to allow check-ins
@@ -244,7 +242,7 @@ def main_page():
 
     # Quick stats
     st.markdown("---")
-    st.subheader("📈 Quick Stats")
+    st.subheader("Quick Stats")
 
     try:
         headers = get_auth_headers()

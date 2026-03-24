@@ -230,7 +230,10 @@ def clear_auth_state() -> None:
 def require_auth() -> None:
     initialize_auth_state()
     if not st.session_state.get('authenticated', False):
-        st.warning("Please login from the main page.")
+        st.warning("Your session has expired or you are not logged in.")
+        if st.button("Go to Login Page"):
+            clear_auth_state()
+            st.switch_page("app.py")
         st.stop()
 
 

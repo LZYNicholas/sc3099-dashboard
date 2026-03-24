@@ -1,28 +1,87 @@
-"""
-SAIV Instructor Dashboard - Reports & Export Page
+"""SAIV Instructor Dashboard - Reports & Export Page
 """
 
 import streamlit as st
 import requests
 import pandas as pd
+import io
 from datetime import datetime
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import extract_items
 
+try:
+    from fpdf import FPDF
+    _HAS_FPDF = True
+except ImportError:
+    _HAS_FPDF = False
+
 # Page configuration
-st.set_page_config(page_title="Reports - SAIV Dashboard", page_icon="📥", layout="wide")
+st.set_page_config(page_title="Reports - SAIV Dashboard", layout="wide")
 
 def get_headers():
     return get_auth_headers()
 
+
+def _generate_pdf_from_response(response, title: str) -> bytes:
+    """Convert API response data into a PDF document."""
+    content_type = response.headers.get('content-type', '')
+    try:
+        if 'json' in content_type:
+            data = response.json()
+            items = data.get('items', data) if isinstance(data, dict) else data
+            df = pd.DataFrame(items) if isinstance(items, list) else pd.DataFrame([items])
+        else:
+            df = pd.read_csv(io.StringIO(response.text))
+    except Exception:
+        df = pd.DataFrame({'raw': [response.text[:500]]})
+    return _dataframe_to_pdf(df, title)
+
+
+def _dataframe_to_pdf(df: pd.DataFrame, title: str) -> bytes:
+    """Render a DataFrame as a simple PDF table."""
+    pdf = FPDF()
+    pdf.add_page('L')
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 10, title, ln=True, align='C')
+    pdf.set_font('Helvetica', '', 8)
+    pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align='C')
+    pdf.ln(4)
+
+    cols = list(df.columns)
+    col_width = (pdf.w - 20) / max(len(cols), 1)
+
+    pdf.set_font('Helvetica', 'B', 7)
+    for col in cols:
+        pdf.cell(col_width, 7, str(col)[:20], border=1, align='C')
+    pdf.ln()
+
+    pdf.set_font('Helvetica', '', 7)
+    for _, row in df.head(200).iterrows():
+        for col in cols:
+            val = str(row[col]) if pd.notna(row[col]) else ''
+            pdf.cell(col_width, 6, val[:25], border=1)
+        pdf.ln()
+
+    return pdf.output()
+
+
+def _get_format_options():
+    """Return export format options, including PDF if available."""
+    options = ['csv', 'xlsx', 'json']
+    labels = {'csv': 'CSV (Comma Separated)', 'xlsx': 'Excel', 'json': 'JSON'}
+    if _HAS_FPDF:
+        options.append('pdf')
+        labels['pdf'] = 'PDF (Official Record)'
+    return options, labels
+
+
 def main():
     require_auth()
 
-    st.title("📥 Reports & Data Export")
+    st.title("Reports & Data Export")
     st.markdown("Generate and download attendance reports in various formats.")
 
-    # Tabs for different report types
-    tab1, tab2, tab3 = st.tabs(["📚 Course Reports", "🎯 Session Reports", "📊 Custom Reports"])
+    tab1, tab2, tab3 = st.tabs(["Course Reports", "Session Reports", "Custom Reports"])
 
     with tab1:
         course_reports()
@@ -34,12 +93,39 @@ def main():
         custom_reports()
 
 
+def _offer_download(response, export_format, base_filename, title):
+    """Offer download button for the given response and format."""
+    if export_format == 'pdf' and _HAS_FPDF:
+        pdf_bytes = _generate_pdf_from_response(response, title)
+        st.success("PDF report generated successfully!")
+        st.download_button(
+            "Download PDF Report",
+            pdf_bytes,
+            f"{base_filename}.pdf",
+            "application/pdf",
+            use_container_width=True,
+        )
+    else:
+        mime_types = {
+            'csv': 'text/csv',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'json': 'application/json'
+        }
+        st.success("Report generated successfully!")
+        st.download_button(
+            f"Download {export_format.upper()} Report",
+            response.content,
+            f"{base_filename}.{export_format}",
+            mime_types.get(export_format, 'application/octet-stream'),
+            use_container_width=True
+        )
+
+
 def course_reports():
     """Course attendance reports"""
     st.subheader("Course Attendance Reports")
     st.markdown("Export attendance data for entire courses.")
 
-    # Fetch courses
     try:
         response = requests.get(
             f"{API_BASE_URL}/courses/",
@@ -66,16 +152,16 @@ def course_reports():
                 )
 
             with col2:
+                fmt_options, fmt_labels = _get_format_options()
                 export_format = st.selectbox(
                     "Export Format",
-                    options=['csv', 'xlsx', 'json'],
-                    format_func=lambda x: {'csv': 'CSV (Comma Separated)', 'xlsx': 'Excel', 'json': 'JSON'}[x],
+                    options=fmt_options,
+                    format_func=lambda x: fmt_labels[x],
                     key="course_format"
                 )
 
             st.markdown("---")
 
-            # Report options
             st.markdown("#### Report Options")
             col1, col2 = st.columns(2)
 
@@ -89,38 +175,22 @@ def course_reports():
 
             st.markdown("---")
 
-            if st.button("📥 Generate Course Report", use_container_width=True, key="gen_course_report"):
+            if st.button("Generate Course Report", use_container_width=True, key="gen_course_report"):
                 with st.spinner("Generating report..."):
                     try:
-                        response = requests.get(
-                            f"{API_BASE_URL}/export/attendance/{selected_course}?format={export_format}",
+                        api_format = export_format if export_format != 'pdf' else 'json'
+                        resp = requests.get(
+                            f"{API_BASE_URL}/export/attendance/{selected_course}?format={api_format}",
                             headers=get_headers(),
                             timeout=30
                         )
 
-                        if response.status_code == 200:
-                            # Get filename
+                        if resp.status_code == 200:
                             course_name = course_options[selected_course].replace(' ', '_').replace('-', '_')
                             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            filename = f"attendance_{course_name}_{timestamp}.{export_format}"
-
-                            # Determine mime type
-                            mime_types = {
-                                'csv': 'text/csv',
-                                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                'json': 'application/json'
-                            }
-
-                            st.success("Report generated successfully!")
-                            st.download_button(
-                                f"📥 Download {export_format.upper()} Report",
-                                response.content,
-                                filename,
-                                mime_types.get(export_format, 'application/octet-stream'),
-                                use_container_width=True
-                            )
+                            _offer_download(resp, export_format, f"attendance_{course_name}_{timestamp}", f"Course Attendance Report - {course_options[selected_course]}")
                         else:
-                            st.error(f"Failed to generate report. Status: {response.status_code}")
+                            st.error(f"Failed to generate report. Status: {resp.status_code}")
 
                     except Exception as e:
                         st.error(f"Error generating report: {str(e)}")
@@ -137,7 +207,6 @@ def session_reports():
     st.subheader("Session Reports")
     st.markdown("Export attendance data for individual sessions.")
 
-    # Fetch courses and sessions
     try:
         courses_response = requests.get(
             f"{API_BASE_URL}/courses/",
@@ -163,7 +232,6 @@ def session_reports():
                     key="session_course_select"
                 )
 
-            # Fetch sessions for selected course
             sessions_response = requests.get(
                 f"{API_BASE_URL}/sessions/?course_id={selected_course}",
                 headers=get_headers(),
@@ -188,10 +256,11 @@ def session_reports():
             col1, col2 = st.columns(2)
 
             with col1:
+                fmt_options, fmt_labels = _get_format_options()
                 export_format = st.selectbox(
                     "Export Format",
-                    options=['csv', 'xlsx', 'json'],
-                    format_func=lambda x: {'csv': 'CSV', 'xlsx': 'Excel', 'json': 'JSON'}[x],
+                    options=fmt_options,
+                    format_func=lambda x: fmt_labels[x],
                     key="session_format"
                 )
 
@@ -200,36 +269,22 @@ def session_reports():
 
             st.markdown("---")
 
-            if st.button("📥 Generate Session Report", use_container_width=True, key="gen_session_report"):
+            if st.button("Generate Session Report", use_container_width=True, key="gen_session_report"):
                 with st.spinner("Generating report..."):
                     try:
-                        response = requests.get(
-                            f"{API_BASE_URL}/export/session/{selected_session}?format={export_format}",
+                        api_format = export_format if export_format != 'pdf' else 'json'
+                        resp = requests.get(
+                            f"{API_BASE_URL}/export/session/{selected_session}?format={api_format}",
                             headers=get_headers(),
                             timeout=30
                         )
 
-                        if response.status_code == 200:
+                        if resp.status_code == 200:
                             session_name = session_options[selected_session].split('(')[0].strip().replace(' ', '_')
                             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            filename = f"session_{session_name}_{timestamp}.{export_format}"
-
-                            mime_types = {
-                                'csv': 'text/csv',
-                                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                'json': 'application/json'
-                            }
-
-                            st.success("Report generated successfully!")
-                            st.download_button(
-                                f"📥 Download {export_format.upper()} Report",
-                                response.content,
-                                filename,
-                                mime_types.get(export_format, 'application/octet-stream'),
-                                use_container_width=True
-                            )
+                            _offer_download(resp, export_format, f"session_{session_name}_{timestamp}", f"Session Report - {session_options[selected_session]}")
                         else:
-                            st.error(f"Failed to generate report. Status: {response.status_code}")
+                            st.error(f"Failed to generate report. Status: {resp.status_code}")
 
                     except Exception as e:
                         st.error(f"Error generating report: {str(e)}")
@@ -246,15 +301,14 @@ def custom_reports():
     st.subheader("Custom Report Builder")
     st.markdown("Build custom reports with specific data fields and filters.")
 
-    # Report type selection
     report_type = st.selectbox(
         "Report Type",
         options=['attendance_summary', 'student_performance', 'risk_analysis', 'enrollment_status'],
         format_func=lambda x: {
-            'attendance_summary': '📊 Attendance Summary',
-            'student_performance': '👥 Student Performance',
-            'risk_analysis': '🚨 Risk Analysis',
-            'enrollment_status': '📝 Enrollment Status'
+            'attendance_summary': 'Attendance Summary',
+            'student_performance': 'Student Performance',
+            'risk_analysis': 'Risk Analysis',
+            'enrollment_status': 'Enrollment Status'
         }[x]
     )
 
@@ -265,14 +319,12 @@ def custom_reports():
     with col1:
         st.markdown("#### Filters")
 
-        # Date range
         date_col1, date_col2 = st.columns(2)
         with date_col1:
             start_date = st.date_input("Start Date", key="custom_start")
         with date_col2:
             end_date = st.date_input("End Date", key="custom_end")
 
-        # Course filter
         try:
             courses_response = requests.get(
                 f"{API_BASE_URL}/courses/",
@@ -281,7 +333,6 @@ def custom_reports():
             )
             if courses_response.status_code == 200:
                 raw_courses = extract_items(courses_response.json())
-                # Defensive normalization so malformed payloads never crash the page.
                 courses = [
                     c for c in raw_courses
                     if isinstance(c, dict) and c.get('id')
@@ -343,14 +394,11 @@ def custom_reports():
 
     st.markdown("---")
 
-    # Preview section
     st.markdown("#### Preview")
     st.info("Click 'Generate Report' to preview and download the custom report.")
 
-    if st.button("📥 Generate Custom Report", use_container_width=True, key="gen_custom_report"):
+    if st.button("Generate Custom Report", use_container_width=True, key="gen_custom_report"):
         with st.spinner("Generating custom report..."):
-            # Build sample data for demonstration
-            # In production, this would call a custom report endpoint
             st.warning("Custom report generation requires a backend endpoint. Showing sample structure.")
 
             sample_data = []
@@ -375,11 +423,10 @@ def custom_reports():
                 df = pd.DataFrame(sample_data)
                 st.dataframe(df, use_container_width=True)
 
-                # Provide download
                 if export_format == 'csv':
                     csv_data = df.to_csv(index=False)
                     st.download_button(
-                        "📥 Download Sample CSV",
+                        "Download Sample CSV",
                         csv_data,
                         f"custom_report_{report_type}.csv",
                         "text/csv",
@@ -388,7 +435,7 @@ def custom_reports():
                 elif export_format == 'json':
                     json_data = df.to_json(orient='records', indent=2)
                     st.download_button(
-                        "📥 Download Sample JSON",
+                        "Download Sample JSON",
                         json_data,
                         f"custom_report_{report_type}.json",
                         "application/json",
