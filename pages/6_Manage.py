@@ -431,6 +431,10 @@ with tab2:
                 # Build datetime objects first for validation
                 scheduled_start = datetime.combine(session_date, start_time).replace(tzinfo=SG_TZ)
                 scheduled_end = datetime.combine(session_date, end_time).replace(tzinfo=SG_TZ)
+                # Allow overnight sessions: if end clock time is earlier than start,
+                # treat end as next day.
+                if scheduled_end <= scheduled_start:
+                    scheduled_end = scheduled_end + timedelta(days=1)
                 checkin_opens = scheduled_start - timedelta(minutes=checkin_opens_minutes)
                 checkin_closes = scheduled_start + timedelta(minutes=checkin_closes_minutes)
 
@@ -439,9 +443,6 @@ with tab2:
 
                 if not session_name:
                     validation_errors.append("Please enter a session name")
-
-                if scheduled_end <= scheduled_start:
-                    validation_errors.append("End time must be after start time")
 
                 if checkin_closes <= checkin_opens:
                     validation_errors.append("Check-in close time must be after open time")

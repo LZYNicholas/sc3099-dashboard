@@ -4,8 +4,10 @@
 import streamlit as st
 import requests
 import pandas as pd
+import os
+import json
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import bool_query, extract_items
@@ -19,6 +21,7 @@ except Exception:
 st.set_page_config(page_title="Sessions - SAIV Dashboard", layout="wide")
 
 SG_TZ = ZoneInfo("Asia/Singapore")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
 def get_headers():
     return get_auth_headers()
@@ -83,6 +86,21 @@ def fetch_session_qr(session_id):
         return False, str(error)
 
 
+def parse_qr_session_id(payload: str, fallback_session_id: str) -> str:
+    try:
+        data = json.loads(payload)
+        if isinstance(data, dict) and data.get("sessionId"):
+            return str(data["sessionId"])
+    except Exception:
+        pass
+    return fallback_session_id
+
+
+def build_direct_attendance_link(session_id: str, qr_payload: str) -> str:
+    query = urlencode({"sessionId": session_id, "qr": qr_payload})
+    return f"{FRONTEND_BASE_URL}/attendance?{query}"
+
+
 def render_qr_block(qr_data, session_id):
     payload = qr_data.get('qr_payload', '')
     expires_at = qr_data.get('qr_expires_at')
@@ -99,6 +117,11 @@ def render_qr_block(qr_data, session_id):
     except Exception:
         qr_url = f"https://quickchart.io/qr?size=300&text={quote(payload)}"
         st.image(qr_url, caption=f"Session QR - {session_id}", width=280)
+
+    linked_session_id = parse_qr_session_id(payload, session_id)
+    attendance_link = build_direct_attendance_link(linked_session_id, payload)
+    st.caption("Direct attendance link (equivalent to scanning this QR)")
+    st.code(attendance_link)
 
 
 def update_session_status(session_id, status):

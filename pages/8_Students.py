@@ -47,11 +47,20 @@ def main():
     # Fetch enrolled students
     try:
         students_resp = requests.get(
-            f"{API_BASE_URL}/courses/{selected_course}/enrollments",
+            f"{API_BASE_URL}/enrollments/course/{selected_course}",
             headers=get_headers(),
             timeout=10,
         )
-        students = extract_items(students_resp.json()) if students_resp.status_code == 200 else []
+        if students_resp.status_code == 200:
+            payload = students_resp.json()
+            if isinstance(payload, dict):
+                students = payload.get("students", [])
+            elif isinstance(payload, list):
+                students = payload
+            else:
+                students = []
+        else:
+            students = []
     except Exception:
         students = []
 
