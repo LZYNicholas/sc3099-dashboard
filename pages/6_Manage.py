@@ -16,6 +16,7 @@ require_auth()
 
 # API Configuration
 SG_TZ = ZoneInfo("Asia/Singapore")
+_API_GET_CACHE: dict[tuple[str, tuple[tuple[str, str], ...]], requests.Response | None] = {}
 
 
 def to_api_datetime(value: datetime) -> str:
@@ -47,6 +48,7 @@ def api_post(endpoint: str, data: dict):
 
 def api_get(endpoint: str, params: dict = None):
     """Make GET request to API"""
+    cache_key: tuple[str, tuple[tuple[str, str], ...]] | None = None
     try:
         query_params = None
         if params is not None:
@@ -54,6 +56,12 @@ def api_get(endpoint: str, params: dict = None):
                 k: bool_query(v) if isinstance(v, bool) else v
                 for k, v in params.items()
             }
+        cache_key = (
+            endpoint,
+            tuple(sorted((str(k), str(v)) for k, v in (query_params or {}).items()))
+        )
+        if cache_key in _API_GET_CACHE:
+            return _API_GET_CACHE[cache_key]
 
         response = requests.get(
             f"{API_BASE_URL}{endpoint}",
@@ -61,9 +69,12 @@ def api_get(endpoint: str, params: dict = None):
             headers=get_headers(),
             timeout=10
         )
+        _API_GET_CACHE[cache_key] = response
         return response
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
+        if cache_key is not None:
+            _API_GET_CACHE[cache_key] = None
         return None
 
 def api_patch(endpoint: str, data: dict):
@@ -245,6 +256,13 @@ with tab1:
     response = api_get("/courses/", {"limit": 50, "is_active": True})
     if response is not None and response.status_code == 200:
         courses = response_items(response)
+        sessions_by_course: dict[str, list[dict]] = {}
+        sessions_response = api_get("/sessions/", {"limit": 500})
+        if sessions_response is not None and sessions_response.status_code == 200:
+            for session in response_items(sessions_response):
+                course_id = session.get('course_id')
+                if isinstance(course_id, str):
+                    sessions_by_course.setdefault(course_id, []).append(session)
         if courses:
             for course in courses:
                 with st.expander(f"{course.get('code')} - {course.get('name')}"):
@@ -260,11 +278,8 @@ with tab1:
                     
                     # Delete button - only for active courses
                     if course.get('is_active'):
-                        # Check if course has any sessions
-                        sessions_response = api_get("/sessions/", {"course_id": course.get('id'), "limit": 10})
-                        course_sessions = []
-                        if sessions_response is not None and sessions_response.status_code == 200:
-                            course_sessions = response_items(sessions_response)
+                        # Check if course has any sessions (from preloaded sessions map)
+                        course_sessions = sessions_by_course.get(course.get('id'), [])
 
                         # Show warning if course has sessions
                         if course_sessions:
@@ -393,15 +408,28 @@ with tab2:
                     help="Leave empty to use course default"
                 )
             with col2:
+                default_lat = selected_course.get('venue_latitude')
+                if default_lat is None:
+                    default_lat = 1.2950
+                default_lon = selected_course.get('venue_longitude')
+                if default_lon is None:
+                    default_lon = 103.7737
+                default_geofence = selected_course.get('geofence_radius_meters')
+                if default_geofence is None:
+                    default_geofence = 100
+                default_risk_threshold = selected_course.get('risk_threshold')
+                if default_risk_threshold is None:
+                    default_risk_threshold = 0.5
+
                 session_lat = st.number_input(
                     "Latitude",
-                    value=float(selected_course.get('venue_latitude', 1.2950)),
+                    value=float(default_lat),
                     format="%.6f"
                 )
             with col3:
                 session_lon = st.number_input(
                     "Longitude",
-                    value=float(selected_course.get('venue_longitude', 103.7737)),
+                    value=float(default_lon),
                     format="%.6f"
                 )
 
@@ -413,7 +441,7 @@ with tab2:
             with col2:
                 session_geofence = st.number_input(
                     "Geofence Radius (m)",
-                    value=int(selected_course.get('geofence_radius_meters', 100)),
+                    value=int(default_geofence),
                     min_value=10,
                     max_value=1000
                 )
@@ -421,7 +449,7 @@ with tab2:
                     "Risk Threshold",
                     min_value=0.0,
                     max_value=1.0,
-                    value=float(selected_course.get('risk_threshold', 0.5)),
+                    value=float(default_risk_threshold),
                     step=0.1
                 )
 
