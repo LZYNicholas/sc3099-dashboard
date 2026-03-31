@@ -172,32 +172,72 @@ def login_page():
     """Display login page"""
     inject_login_autofill_hints()
     st.markdown('<div class="main-header">SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
-    st.markdown("Please login with your instructor credentials.")
 
     col1, col2, col3 = st.columns([1, 2, 1])
 
     with col2:
-        with st.form("login_form"):
-            email = st.text_input(
-                "Email",
-                placeholder="instructor@example.com",
-                autocomplete="email"
-            )
-            password = st.text_input(
-                "Password",
-                type="password",
-                autocomplete="current-password"
-            )
-            submit = st.form_submit_button("Login", use_container_width=True)
+        tab1, tab2 = st.tabs(["Login", "Register"])
+        
+        with tab1:
+            st.markdown("Please login with your instructor credentials.")
+            with st.form("login_form"):
+                email = st.text_input(
+                    "Email",
+                    placeholder="instructor@example.com",
+                    autocomplete="email"
+                )
+                password = st.text_input(
+                    "Password",
+                    type="password",
+                    autocomplete="current-password"
+                )
+                submit = st.form_submit_button("Login", use_container_width=True)
 
-            if submit:
-                if email and password:
-                    with st.spinner("Authenticating..."):
-                        if login(email, password):
-                            st.success("Login successful!")
-                            st.rerun()
-                else:
-                    st.warning("Please enter both email and password.")
+                if submit:
+                    if email and password:
+                        with st.spinner("Authenticating..."):
+                            if login(email, password):
+                                st.success("Login successful!")
+                                st.rerun()
+                    else:
+                        st.warning("Please enter both email and password.")
+
+        with tab2:
+            st.markdown("Register for a new dashboard account.")
+            with st.form("register_form"):
+                new_name = st.text_input("Full Name")
+                new_email = st.text_input("Email", placeholder="instructor@example.com")
+                new_password = st.text_input("Password", type="password")
+                new_role = st.selectbox("Role", ["instructor", "admin", "ta"])
+                submit_register = st.form_submit_button("Register", use_container_width=True)
+                
+                if submit_register:
+                    if not (new_name and new_email and new_password):
+                        st.warning("Please fill in all fields.")
+                    else:
+                        with st.spinner("Creating account..."):
+                            try:
+                                res = requests.post(
+                                    f"{API_BASE_URL}/auth/register",
+                                    json={
+                                        "email": new_email,
+                                        "password": new_password,
+                                        "full_name": new_name,
+                                        "role": new_role
+                                    },
+                                    timeout=10
+                                )
+                                if res.status_code == 201:
+                                    st.success(f"Account for {new_email} created successfully! You can now login.")
+                                else:
+                                    try:
+                                        err_json = res.json()
+                                        err_msg = err_json.get('message', err_json.get('error', res.text))
+                                    except:
+                                        err_msg = res.text
+                                    st.error(f"Registration failed: {err_msg}")
+                            except Exception as e:
+                                st.error(f"Connection error: {e}")
 
 
 def main_page():

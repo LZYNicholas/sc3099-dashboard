@@ -1,4 +1,4 @@
-﻿"""SAIV Dashboard - Course & Session Management
+"""SAIV Dashboard - Course & Session Management
 Create and manage courses and sessions for attendance
 """
 
@@ -839,9 +839,10 @@ with tab4:
 
         # Delete button - only for scheduled or cancelled sessions (no check-ins recorded)
         if status in ['scheduled', 'cancelled']:
-            st.markdown("---")
-            st.markdown("##### Danger Zone")
-            st.caption("Sessions can only be deleted if they are scheduled or cancelled (no attendance recorded).")
+            st.warning("""
+            **Warning:** Deleting a session is permanent. 
+            Only sessions with status `scheduled` can be deleted. Active or closed sessions must be `cancelled` instead.
+            """)
             if st.button("Delete Session", use_container_width=True, type="secondary"):
                 try:
                     # DELETE request without Content-Type header
