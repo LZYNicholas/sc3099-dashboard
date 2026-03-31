@@ -146,7 +146,7 @@ st.markdown("Create and manage courses and sessions for student attendance.")
 st.markdown("---")
 
 # Tabs for different management functions
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Create Course", "Create Session", "Manage Enrollments", "Session Status", "Recovery"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Create Course", "Create Session", "Manage Enrollments", "Session Status", "Recovery", "Manage Devices"])
 
 # ============================================================================
 # TAB 1: CREATE COURSE
@@ -942,5 +942,74 @@ with tab5:
             st.info("No deleted courses found.")
     else:
         st.warning("Could not load deleted courses")
+
+
+# ============================================================================
+# TAB 6: MANAGE DEVICES (ADMIN)
+# ============================================================================
+with tab6:
+    st.subheader("Admin Device Management")
+    st.markdown("View, revoke, and set trust for all registered devices.")
+
+    def fetch_all_devices(headers):
+        try:
+            resp = requests.get(f"{API_BASE_URL}/devices/?limit=500", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get("items", [])
+        except Exception:
+            pass
+        return []
+
+    def revoke_device(device_id, headers):
+        try:
+            resp = requests.delete(f"{API_BASE_URL}/devices/{device_id}", headers=headers, timeout=10)
+            return resp.status_code == 204
+        except Exception:
+            return False
+
+    def set_device_trust(device_id, is_trusted, headers):
+        try:
+            resp = requests.patch(
+                f"{API_BASE_URL}/devices/{device_id}",
+                json={"is_trusted": is_trusted},
+                headers=headers,
+                timeout=10
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    headers = get_headers()
+    devices = fetch_all_devices(headers)
+    if not devices:
+        st.info("No devices found.")
+    else:
+        for device in devices:
+            with st.expander(f"{device.get('device_name', 'Unknown Device')} ({device.get('platform', 'unknown')}) - Trusted: {device.get('is_trusted', False)}"):
+                st.write(f"**ID:** `{device.get('id')}`")
+                st.write(f"**User ID:** `{device.get('user_id', 'N/A')}`")
+                st.write(f"**Platform:** {device.get('platform', 'unknown')}")
+                st.write(f"**First Seen:** {device.get('first_seen_at', 'N/A')}")
+                st.write(f"**Last Seen:** {device.get('last_seen_at', 'N/A')}")
+                st.write(f"**Active:** {'Yes' if device.get('is_active', True) else 'No'}")
+                st.write(f"**Trust Score:** {device.get('trust_score', 'N/A')}")
+                st.write(f"**Trusted:** {'Yes' if device.get('is_trusted', False) else 'No'}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Revoke Device", key=f"revoke_{device['id']}"):
+                        if revoke_device(device['id'], headers):
+                            st.success("Device revoked.")
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to revoke device.")
+                with col2:
+                    new_trust = not device.get('is_trusted', False)
+                    trust_label = "Set Trusted" if not device.get('is_trusted', False) else "Set Untrusted"
+                    if st.button(trust_label, key=f"trust_{device['id']}"):
+                        if set_device_trust(device['id'], new_trust, headers):
+                            st.success("Trust updated.")
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to update trust.")
 
 
