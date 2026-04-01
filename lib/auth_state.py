@@ -46,8 +46,9 @@ def _get_query_sid() -> Optional[str]:
 
 
 def _set_query_sid(sid: Optional[str]) -> None:
-    # Never expose session identifiers in URL query params.
-    if "sid" in st.query_params:
+    if sid:
+        st.query_params["sid"] = sid
+    elif "sid" in st.query_params:
         del st.query_params["sid"]
 
 
@@ -183,8 +184,6 @@ def initialize_auth_state() -> None:
 
     if "token" in st.query_params:
         del st.query_params["token"]
-    if "sid" in st.query_params:
-        del st.query_params["sid"]
 
     if st.session_state.get('authenticated') and st.session_state.get('access_token'):
         sid = st.session_state.get('auth_sid') or _get_query_sid() or uuid4().hex

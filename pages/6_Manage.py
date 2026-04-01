@@ -434,7 +434,7 @@ with tab2:
                 )
 
             st.markdown("##### Security Settings")
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 require_liveness = st.checkbox("Require Liveness Check", value=True)
                 require_face_match = st.checkbox("Require Face Match", value=False)
@@ -444,6 +444,12 @@ with tab2:
                     value=int(default_geofence),
                     min_value=10,
                     max_value=1000
+                )
+            with col3:
+                qr_code_enabled = st.checkbox(
+                    "Require QR Code",
+                    value=False,
+                    help="Students must scan the instructor QR before submitting attendance"
                 )
                 session_risk_threshold = st.slider(
                     "Risk Threshold",
@@ -497,7 +503,8 @@ with tab2:
                         "geofence_radius_meters": session_geofence,
                         "require_liveness_check": require_liveness,
                         "require_face_match": require_face_match,
-                        "risk_threshold": session_risk_threshold
+                        "risk_threshold": session_risk_threshold,
+                        "qr_code_enabled": qr_code_enabled
                     }
 
                     with st.spinner("Creating session..."):
