@@ -367,13 +367,11 @@ with tab2:
             with col2:
                 # Date and time inputs - default to 10 minutes from now
                 default_start = datetime.now(SG_TZ) + timedelta(minutes=10)
-                # Round up to next 5-minute interval
-                minutes = default_start.minute
-                rounded_minutes = ((minutes // 5) + 1) * 5
-                if rounded_minutes >= 60:
-                    default_start = default_start.replace(hour=default_start.hour + 1, minute=0, second=0, microsecond=0)
-                else:
-                    default_start = default_start.replace(minute=rounded_minutes, second=0, microsecond=0)
+                # Round up safely to the next 5-minute interval (handles day/hour rollover).
+                default_start = default_start.replace(second=0, microsecond=0)
+                minute_remainder = default_start.minute % 5
+                minutes_to_add = (5 - minute_remainder) if minute_remainder else 5
+                default_start = default_start + timedelta(minutes=minutes_to_add)
                 default_end = default_start + timedelta(hours=2)
                 
                 session_date = st.date_input(
