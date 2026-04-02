@@ -93,15 +93,17 @@ def fetch_all_checkins(headers: dict) -> pd.DataFrame:
 
 
 def fetch_devices(headers: dict) -> pd.DataFrame:
-    """Fetch all registered devices (admin only)."""
+    """Fetch current user's devices."""
     try:
         resp = requests.get(
-            f"{API_BASE_URL}/devices/?limit=500",
+            f"{API_BASE_URL}/devices/my-devices",
             headers=headers,
             timeout=10,
         )
         if resp.status_code == 200:
-            return pd.DataFrame(resp.json().get("items", []))
+            data = resp.json()
+            items = data if isinstance(data, list) else data.get("items", [])
+            return pd.DataFrame(items)
     except Exception:
         pass
     return pd.DataFrame()
@@ -186,6 +188,10 @@ def matplotlib_heatmap(df: pd.DataFrame) -> BytesIO:
 
 def main():
     require_auth()
+    current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
+    if current_role not in {"ta", "instructor", "admin"}:
+        st.error("Access denied. This page is restricted to instructors and admins.")
+        st.stop()
 
     st.title("Advanced Analytics")
     st.markdown("Deep-dive analytics powered by backend data and Prometheus metrics.")

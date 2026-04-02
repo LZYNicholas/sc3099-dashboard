@@ -170,6 +170,9 @@ st.title("Course & Session Management")
 st.markdown("Create and manage courses and sessions for student attendance.")
 
 current_role = str((st.session_state.get("user") or {}).get("role") or "").strip().lower()
+if current_role not in {"ta", "instructor", "admin"}:
+    st.error("Access denied. This page is restricted to instructors and admins.")
+    st.stop()
 
 st.markdown("---")
 
@@ -665,7 +668,7 @@ with tab3:
                     }
 
                     with st.spinner("Enrolling student..."):
-                        response = api_post("/admin/enrollments/", enroll_data)
+                        response = api_post("/enrollments/", enroll_data)
 
                         if response is not None and response.status_code == 201:
                             st.success("Student enrolled successfully!")
@@ -856,7 +859,7 @@ with tab4:
             if st.button("Activate", use_container_width=True, type="primary", disabled=not can_activate):
                 if can_activate:
                     response = api_patch(
-                        f"/admin/sessions/{selected_session['id']}/status",
+                        f"/sessions/{selected_session['id']}",
                         {"status": "active"}
                     )
                     if response is not None and response.status_code == 200:
@@ -871,7 +874,7 @@ with tab4:
             if st.button("Close", use_container_width=True, disabled=not can_close):
                 if can_close:
                     response = api_patch(
-                        f"/admin/sessions/{selected_session['id']}/status",
+                        f"/sessions/{selected_session['id']}",
                         {"status": "closed"}
                     )
                     if response is not None and response.status_code == 200:
@@ -886,7 +889,7 @@ with tab4:
             if st.button("Cancel", use_container_width=True, disabled=not can_cancel):
                 if can_cancel:
                     response = api_patch(
-                        f"/admin/sessions/{selected_session['id']}/status",
+                        f"/sessions/{selected_session['id']}",
                         {"status": "cancelled"}
                     )
                     if response is not None and response.status_code == 200:
@@ -1005,14 +1008,15 @@ with tab5:
 # TAB 6: MANAGE DEVICES (ADMIN)
 # ============================================================================
 with tab6:
-    st.subheader("Admin Device Management")
-    st.markdown("View, revoke, and set trust for all registered devices.")
+    st.subheader("Device Management")
+    st.markdown("View your registered devices and revoke stale entries.")
 
-    def fetch_all_devices(headers):
+    def fetch_my_devices(headers):
         try:
-            resp = requests.get(f"{API_BASE_URL}/devices/?limit=500", headers=headers, timeout=10)
+            resp = requests.get(f"{API_BASE_URL}/devices/my-devices", headers=headers, timeout=10)
             if resp.status_code == 200:
-                return resp.json().get("items", [])
+                payload = resp.json()
+                return payload if isinstance(payload, list) else payload.get("items", [])
         except Exception:
             pass
         return []
@@ -1024,20 +1028,8 @@ with tab6:
         except Exception:
             return False
 
-    def set_device_trust(device_id, is_trusted, headers):
-        try:
-            resp = requests.patch(
-                f"{API_BASE_URL}/devices/{device_id}",
-                json={"is_trusted": is_trusted},
-                headers=headers,
-                timeout=10
-            )
-            return resp.status_code == 200
-        except Exception:
-            return False
-
     headers = get_headers()
-    devices = fetch_all_devices(headers)
+    devices = fetch_my_devices(headers)
     if not devices:
         st.info("No devices found.")
     else:
@@ -1060,13 +1052,22 @@ with tab6:
                         else:
                             st.error("Failed to revoke device.")
                 with col2:
-                    new_trust = not device.get('is_trusted', False)
-                    trust_label = "Set Trusted" if not device.get('is_trusted', False) else "Set Untrusted"
-                    if st.button(trust_label, key=f"trust_{device['id']}"):
-                        if set_device_trust(device['id'], new_trust, headers):
-                            st.success("Trust updated.")
-                            st.experimental_rerun()
-                        else:
-                            st.error("Failed to update trust.")
+                    st.caption("Admins can still revoke any device by ID below.")
+
+    if current_role == "admin":
+        st.markdown("---")
+        st.markdown("##### Admin: Revoke Any Device by ID")
+        with st.form("admin_revoke_device_by_id"):
+            device_id = st.text_input("Device ID", placeholder="UUID of device to revoke")
+            submit_revoke_any = st.form_submit_button("Revoke by ID", use_container_width=True)
+            if submit_revoke_any:
+                if not device_id.strip():
+                    st.error("Please enter a device ID.")
+                else:
+                    if revoke_device(device_id.strip(), headers):
+                        st.success("Device revoked.")
+                        st.rerun()
+                    else:
+                        st.error("Failed to revoke device by ID.")
 
 

@@ -4,16 +4,9 @@
 import streamlit as st
 import requests
 import pandas as pd
-import io
 from datetime import datetime
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import extract_items
-
-try:
-    from fpdf import FPDF
-    _HAS_FPDF = True
-except ImportError:
-    _HAS_FPDF = False
 
 # Page configuration
 st.set_page_config(page_title="Reports - SAIV Dashboard", layout="wide")
@@ -22,61 +15,19 @@ def get_headers():
     return get_auth_headers()
 
 
-def _generate_pdf_from_response(response, title: str) -> bytes:
-    """Convert API response data into a PDF document."""
-    content_type = response.headers.get('content-type', '')
-    try:
-        if 'json' in content_type:
-            data = response.json()
-            items = data.get('items', data) if isinstance(data, dict) else data
-            df = pd.DataFrame(items) if isinstance(items, list) else pd.DataFrame([items])
-        else:
-            df = pd.read_csv(io.StringIO(response.text))
-    except Exception:
-        df = pd.DataFrame({'raw': [response.text[:500]]})
-    return _dataframe_to_pdf(df, title)
-
-
-def _dataframe_to_pdf(df: pd.DataFrame, title: str) -> bytes:
-    """Render a DataFrame as a simple PDF table."""
-    pdf = FPDF()
-    pdf.add_page('L')
-    pdf.set_font('Helvetica', 'B', 14)
-    pdf.cell(0, 10, title, ln=True, align='C')
-    pdf.set_font('Helvetica', '', 8)
-    pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align='C')
-    pdf.ln(4)
-
-    cols = list(df.columns)
-    col_width = (pdf.w - 20) / max(len(cols), 1)
-
-    pdf.set_font('Helvetica', 'B', 7)
-    for col in cols:
-        pdf.cell(col_width, 7, str(col)[:20], border=1, align='C')
-    pdf.ln()
-
-    pdf.set_font('Helvetica', '', 7)
-    for _, row in df.head(200).iterrows():
-        for col in cols:
-            val = str(row[col]) if pd.notna(row[col]) else ''
-            pdf.cell(col_width, 6, val[:25], border=1)
-        pdf.ln()
-
-    return pdf.output()
-
-
 def _get_format_options():
-    """Return export format options, including PDF if available."""
-    options = ['csv', 'xlsx', 'json']
-    labels = {'csv': 'CSV (Comma Separated)', 'xlsx': 'Excel', 'json': 'JSON'}
-    if _HAS_FPDF:
-        options.append('pdf')
-        labels['pdf'] = 'PDF (Official Record)'
+    """Return API-supported export format options only."""
+    options = ['csv', 'json']
+    labels = {'csv': 'CSV (Comma Separated)', 'json': 'JSON'}
     return options, labels
 
 
 def main():
     require_auth()
+    current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
+    if current_role not in {'instructor', 'admin'}:
+        st.error("Access denied. This page is restricted to instructors and admins.")
+        st.stop()
 
     st.title("Reports & Data Export")
     st.markdown("Generate and download attendance reports in various formats.")
@@ -95,30 +46,18 @@ def main():
 
 def _offer_download(response, export_format, base_filename, title):
     """Offer download button for the given response and format."""
-    if export_format == 'pdf' and _HAS_FPDF:
-        pdf_bytes = _generate_pdf_from_response(response, title)
-        st.success("PDF report generated successfully!")
-        st.download_button(
-            "Download PDF Report",
-            pdf_bytes,
-            f"{base_filename}.pdf",
-            "application/pdf",
-            use_container_width=True,
-        )
-    else:
-        mime_types = {
-            'csv': 'text/csv',
-            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'json': 'application/json'
-        }
-        st.success("Report generated successfully!")
-        st.download_button(
-            f"Download {export_format.upper()} Report",
-            response.content,
-            f"{base_filename}.{export_format}",
-            mime_types.get(export_format, 'application/octet-stream'),
-            use_container_width=True
-        )
+    mime_types = {
+        'csv': 'text/csv',
+        'json': 'application/json'
+    }
+    st.success("Report generated successfully!")
+    st.download_button(
+        f"Download {export_format.upper()} Report",
+        response.content,
+        f"{base_filename}.{export_format}",
+        mime_types.get(export_format, 'application/octet-stream'),
+        use_container_width=True
+    )
 
 
 def course_reports():
@@ -178,7 +117,7 @@ def course_reports():
             if st.button("Generate Course Report", use_container_width=True, key="gen_course_report"):
                 with st.spinner("Generating report..."):
                     try:
-                        api_format = export_format if export_format != 'pdf' else 'json'
+                        api_format = export_format
                         resp = requests.get(
                             f"{API_BASE_URL}/export/attendance/{selected_course}?format={api_format}",
                             headers=get_headers(),
@@ -272,7 +211,7 @@ def session_reports():
             if st.button("Generate Session Report", use_container_width=True, key="gen_session_report"):
                 with st.spinner("Generating report..."):
                     try:
-                        api_format = export_format if export_format != 'pdf' else 'json'
+                        api_format = export_format
                         resp = requests.get(
                             f"{API_BASE_URL}/export/session/{selected_session}?format={api_format}",
                             headers=get_headers(),
@@ -387,8 +326,8 @@ def custom_reports():
 
         export_format = st.selectbox(
             "Export Format",
-            options=['csv', 'xlsx', 'json'],
-            format_func=lambda x: {'csv': 'CSV', 'xlsx': 'Excel', 'json': 'JSON'}[x],
+            options=['csv', 'json'],
+            format_func=lambda x: {'csv': 'CSV', 'json': 'JSON'}[x],
             key="custom_format"
         )
 

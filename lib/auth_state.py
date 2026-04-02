@@ -100,7 +100,7 @@ def _refresh_tokens(refresh_token: Optional[str]) -> Tuple[bool, Optional[str], 
     try:
         response = requests.post(
             f"{API_BASE_URL}/auth/refresh",
-            cookies={"refresh_token": refresh_token},
+            json={"refresh_token": refresh_token},
             timeout=10
         )
         if response.status_code != 200:
@@ -109,8 +109,11 @@ def _refresh_tokens(refresh_token: Optional[str]) -> Tuple[bool, Optional[str], 
         data = response.json()
         access_token = data.get('access_token')
         next_refresh_token = data.get('refresh_token') or refresh_token
-        user = data.get('user')
-        if not access_token or not user:
+        if not access_token:
+            return False, None, None, None
+
+        ok, user, _ = _fetch_me(access_token)
+        if not ok or not isinstance(user, dict):
             return False, None, None, None
 
         return True, access_token, next_refresh_token, user

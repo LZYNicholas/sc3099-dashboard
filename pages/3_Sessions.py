@@ -187,7 +187,7 @@ def can_manage_qr(role: str) -> bool:
 def update_session_status(session_id, status):
     try:
         response = requests.patch(
-            f"{API_BASE_URL}/admin/sessions/{session_id}/status",
+            f"{API_BASE_URL}/sessions/{session_id}",
             json={"status": status},
             headers={**get_headers(), "Content-Type": "application/json"},
             timeout=10
@@ -204,6 +204,9 @@ def update_session_status(session_id, status):
 def main():
     require_auth()
     current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
+    if current_role not in {"ta", "instructor", "admin"}:
+        st.error("Access denied. This page is restricted to instructors and admins.")
+        st.stop()
 
     st.title("Session Monitoring")
     st.markdown("Monitor active sessions and view check-in details.")
@@ -632,12 +635,13 @@ def show_session_details(session_id, sessions, active_course_ids=None):
             st.markdown("#### Statistics")
 
             col1, col2, col3, col4 = st.columns(4)
+            by_status = stats.get('by_status', {}) if isinstance(stats.get('by_status'), dict) else {}
             with col1:
-                st.metric("Total Check-ins", stats.get('total_checkins', 0))
+                st.metric("Total Check-ins", stats.get('total_checkins', stats.get('checked_in_count', stats.get('checked_in', 0))))
             with col2:
-                st.metric("On Time", stats.get('on_time_count', 0))
+                st.metric("Approved", stats.get('approved_count', by_status.get('approved', 0)))
             with col3:
-                st.metric("Late", stats.get('late_count', 0))
+                st.metric("Rejected", by_status.get('rejected', 0))
             with col4:
                 st.metric("Flagged", stats.get('flagged_count', 0))
 

@@ -37,37 +37,13 @@ SEVERITY_COLORS = {
 
 def main():
     require_auth()
+    current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
+    if current_role != 'admin':
+        st.error("Access denied. This page is restricted to admins.")
+        st.stop()
 
     st.title("Audit Logs")
     st.markdown("View system audit trail and activity logs.")
-
-    # Audit Summary Widget
-    try:
-        summary_resp = requests.get(
-            f"{API_BASE_URL}/audit/summary",
-            params={'days': 7},
-            headers=get_headers(),
-            timeout=10
-        )
-        if summary_resp.status_code == 200:
-            summary = summary_resp.json()
-            st.subheader("7-Day Audit Summary")
-            scol1, scol2 = st.columns([1, 2])
-            with scol1:
-                st.metric("Total Events (7d)", summary.get('total_logs', 0))
-                st.metric("Period (days)", summary.get('period_days', 7))
-            with scol2:
-                by_action = summary.get('by_action', {})
-                if by_action:
-                    action_df = pd.DataFrame(
-                        [{'Action': k, 'Count': v} for k, v in by_action.items()]
-                    ).sort_values('Count', ascending=False)
-                    st.bar_chart(action_df.set_index('Action'))
-                else:
-                    st.info("No actions recorded in the last 7 days.")
-            st.markdown("---")
-    except Exception:
-        pass  # Summary endpoint may not exist yet
 
     # Filters
     st.subheader("Filters")

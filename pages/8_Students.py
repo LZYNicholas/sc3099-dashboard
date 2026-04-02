@@ -17,6 +17,10 @@ def get_headers():
 
 def main():
     require_auth()
+    current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
+    if current_role not in {"ta", "instructor", "admin"}:
+        st.error("Access denied. This page is restricted to instructors and admins.")
+        st.stop()
 
     st.title("Student Analytics")
     st.markdown("View student attendance data and performance metrics.")
@@ -97,21 +101,22 @@ def main():
                 st.subheader(f"{stats.get('student_name', student_options.get(selected_student_id, 'Student'))} - Performance Summary")
 
                 col1, col2, col3, col4 = st.columns(4)
+                courses_stats = stats.get("courses", []) if isinstance(stats.get("courses"), list) else []
+                total_sessions = sum(int(c.get("total_sessions", 0) or 0) for c in courses_stats)
+                attended_sessions = sum(int(c.get("sessions_attended", 0) or 0) for c in courses_stats)
+                attendance_rate = (attended_sessions / total_sessions * 100) if total_sessions else 0
                 with col1:
-                    st.metric("Enrolled Courses", stats.get("enrolled_courses", "N/A"))
+                    st.metric("Enrolled Courses", len(courses_stats))
                 with col2:
-                    st.metric("Total Sessions", stats.get("total_sessions", 0))
+                    st.metric("Total Sessions", total_sessions)
                 with col3:
-                    st.metric("Attended", stats.get("attended_sessions", 0))
+                    st.metric("Attended", attended_sessions)
                 with col4:
-                    rate = stats.get("attendance_rate", 0)
-                    if isinstance(rate, (int, float)) and rate <= 1:
-                        rate = rate * 100
-                    st.metric("Attendance Rate", f"{rate:.1f}%")
+                    st.metric("Attendance Rate", f"{attendance_rate:.1f}%")
 
                 # Attendance pie chart
-                attended = stats.get("attended_sessions", 0)
-                missed = stats.get("missed_sessions", stats.get("total_sessions", 0) - attended)
+                attended = attended_sessions
+                missed = max(0, total_sessions - attended_sessions)
                 if attended or missed:
                     fig = px.pie(
                         names=["Attended", "Missed"],
@@ -122,7 +127,7 @@ def main():
                     st.plotly_chart(fig, use_container_width=True)
 
                 # Recent sessions
-                recent = stats.get("recent_sessions", [])
+                recent = stats.get("recent_checkins", [])
                 if recent:
                     st.subheader("Recent Sessions")
                     df = pd.DataFrame(recent)

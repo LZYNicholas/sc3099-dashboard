@@ -18,8 +18,8 @@ def main():
     require_auth()
 
     user = st.session_state.get("user", {})
-    if user.get("role") not in ("admin", "instructor"):
-        st.error("Access denied. This page is restricted to admins and instructors.")
+    if user.get("role") != "admin":
+        st.error("Access denied. This page is restricted to admins.")
         st.stop()
 
     st.title("User Management")

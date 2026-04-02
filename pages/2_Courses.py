@@ -31,6 +31,10 @@ def response_error(response: requests.Response | None, fallback: str = "Unknown 
 
 def main():
     require_auth()
+    current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
+    if current_role not in {"ta", "instructor", "admin"}:
+        st.error("Access denied. This page is restricted to instructors and admins.")
+        st.stop()
 
     st.title("Course Analytics")
     st.markdown("View detailed statistics and analytics for your courses.")
@@ -107,12 +111,12 @@ def main():
                         with col1:
                             st.metric("Total Sessions", stats.get('total_sessions', 0))
                         with col2:
-                            st.metric("Total Enrollments", stats.get('total_enrollments', 0))
+                            st.metric("Total Enrolled", stats.get('total_enrolled', stats.get('total_enrollments', 0)))
                         with col3:
                             total_checkins = stats.get('total_checkins', stats.get('total_checked_in', 0))
                             st.metric("Total Check-ins", total_checkins)
                         with col4:
-                            rate = stats.get('attendance_rate', 0) * 100
+                            rate = stats.get('overall_attendance_rate', stats.get('attendance_rate', 0)) * 100
                             st.metric("Attendance Rate", f"{rate:.1f}%")
 
                         st.markdown("---")

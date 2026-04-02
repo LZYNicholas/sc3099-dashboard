@@ -171,7 +171,7 @@ class APIClient:
     def update_session_status(self, session_id: str, status: str) -> Tuple[bool, Any]:
         try:
             response = self.session.patch(
-                f"{self.base_url}/admin/sessions/{session_id}/status",
+                f"{self.base_url}/sessions/{session_id}",
                 json={"status": status},
                 headers=self._get_headers()
             )
@@ -235,7 +235,7 @@ class APIClient:
     def create_enrollment(self, student_id: str, course_id: str) -> Tuple[bool, Any]:
         try:
             response = self.session.post(
-                f"{self.base_url}/admin/enrollments/",
+                f"{self.base_url}/enrollments/",
                 json={"student_id": student_id, "course_id": course_id},
                 headers=self._get_headers()
             )
