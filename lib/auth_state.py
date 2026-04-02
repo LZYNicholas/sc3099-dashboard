@@ -23,6 +23,7 @@ def _resolve_api_base_url() -> str:
 API_BASE_URL = _resolve_api_base_url()
 ALLOWED_DASHBOARD_ROLES = {"instructor", "admin", "ta"}
 _AUTH_STORE: Dict[str, Dict[str, Any]] = {}
+AUTH_VALIDATE_CACHE_SECONDS = 60
 
 
 def _ensure_defaults() -> None:
@@ -36,6 +37,8 @@ def _ensure_defaults() -> None:
         st.session_state.refresh_token = None
     if 'auth_sid' not in st.session_state:
         st.session_state.auth_sid = None
+    if 'auth_validated_at' not in st.session_state:
+        st.session_state.auth_validated_at = 0.0
 
 
 def _get_query_sid() -> Optional[str]:
@@ -126,7 +129,13 @@ def _apply_auth_state(sid: str, access_token: str, refresh_token: Optional[str],
     st.session_state.refresh_token = refresh_token
     st.session_state.user = user
     st.session_state.authenticated = True
+    st.session_state.auth_validated_at = time.time()
     _set_query_sid(sid)
+
+
+def _recently_validated() -> bool:
+    validated_at = float(st.session_state.get('auth_validated_at') or 0.0)
+    return (time.time() - validated_at) < AUTH_VALIDATE_CACHE_SECONDS
 
 
 def _restore_from_store() -> None:
@@ -172,7 +181,9 @@ def _restore_from_store() -> None:
                 _apply_auth_state(sid, next_access_token, next_refresh_token, refreshed_user)
                 return
 
-    if cached_user and access_token:
+    # If backend has transient errors (network/5xx), keep cached auth state so
+    # dashboard is still usable and can retry API calls.
+    if cached_user and access_token and status_code not in (401, 403):
         role = cached_user.get('role')
         if role in ALLOWED_DASHBOARD_ROLES:
             _apply_auth_state(sid, access_token, refresh_token, cached_user)
@@ -189,7 +200,11 @@ def initialize_auth_state() -> None:
         sid = st.session_state.get('auth_sid') or _get_query_sid() or uuid4().hex
         access_token = st.session_state.get('access_token')
         refresh_token = st.session_state.get('refresh_token')
-        user = st.session_state.get('user') or {}
+        _user = st.session_state.get('user') or {}
+
+        if not _is_token_expiring_soon(access_token) and _user and _user.get('role') in ALLOWED_DASHBOARD_ROLES and _recently_validated():
+            _apply_auth_state(sid, access_token, refresh_token, _user)
+            return
 
         if _is_token_expiring_soon(access_token):
             refreshed, next_access_token, next_refresh_token, refreshed_user = _refresh_tokens(refresh_token)
@@ -200,9 +215,35 @@ def initialize_auth_state() -> None:
                     return
                 _apply_auth_state(sid, next_access_token, next_refresh_token, refreshed_user)
                 return
+            clear_auth_state()
+            return
 
-        if user and user.get('role') in ALLOWED_DASHBOARD_ROLES:
-            _apply_auth_state(sid, access_token, refresh_token, user)
+        success, fetched_user, status_code = _fetch_me(access_token)
+        if success and fetched_user:
+            role = fetched_user.get('role')
+            if role not in ALLOWED_DASHBOARD_ROLES:
+                clear_auth_state()
+                return
+            _apply_auth_state(sid, access_token, refresh_token, fetched_user)
+            return
+
+        if status_code == 401:
+            refreshed, next_access_token, next_refresh_token, refreshed_user = _refresh_tokens(refresh_token)
+            if refreshed and next_access_token and refreshed_user:
+                role = refreshed_user.get('role')
+                if role not in ALLOWED_DASHBOARD_ROLES:
+                    clear_auth_state()
+                    return
+                _apply_auth_state(sid, next_access_token, next_refresh_token, refreshed_user)
+                return
+
+        # For hard auth failures, force re-login. For transient backend errors,
+        # keep current state and let pages surface exact API errors.
+        if status_code in (401, 403):
+            clear_auth_state()
+            return
+        if _user and _user.get('role') in ALLOWED_DASHBOARD_ROLES:
+            _apply_auth_state(sid, access_token, refresh_token, _user)
             return
 
     _restore_from_store()
@@ -223,6 +264,7 @@ def clear_auth_state() -> None:
     st.session_state.access_token = None
     st.session_state.refresh_token = None
     st.session_state.auth_sid = None
+    st.session_state.auth_validated_at = 0.0
     _set_query_sid(None)
 
 

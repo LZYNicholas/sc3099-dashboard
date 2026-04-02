@@ -15,6 +15,20 @@ st.set_page_config(page_title="Courses - SAIV Dashboard", layout="wide")
 def get_headers():
     return get_auth_headers()
 
+
+def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
+    if response is None:
+        return "Connection error"
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get('detail') or payload.get('message') or payload.get('error')
+        if detail:
+            return str(detail)
+    return fallback
+
 def main():
     require_auth()
 
@@ -172,7 +186,7 @@ def main():
                         if stats_response.status_code == 404:
                             st.info("Course statistics endpoint is not available on this backend branch yet.")
                         else:
-                            st.warning("Could not load course statistics.")
+                            st.warning(f"Could not load course statistics ({stats_response.status_code}): {response_error(stats_response)}")
 
                 except Exception as e:
                     st.warning(f"Could not load course statistics: {str(e)}")
@@ -201,13 +215,13 @@ def main():
                         else:
                             st.info("No students enrolled in this course.")
                     else:
-                        st.warning("Could not load enrollment data.")
+                        st.warning(f"Could not load enrollment data ({enroll_response.status_code}): {response_error(enroll_response)}")
 
                 except Exception as e:
                     st.warning(f"Could not load enrollments: {str(e)}")
 
         else:
-            st.error("Failed to load courses.")
+            st.error(f"Failed to load courses ({response.status_code}): {response_error(response)}")
 
     except Exception as e:
         st.error(f"Connection error: {str(e)}")

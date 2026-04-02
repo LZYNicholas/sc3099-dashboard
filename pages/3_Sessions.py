@@ -27,6 +27,24 @@ FRONTEND_BASE_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/
 def get_headers():
     return get_auth_headers()
 
+
+def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
+    if response is None:
+        return "Connection error"
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        return (
+            str(payload.get("detail"))
+            or str(payload.get("message"))
+            or str(payload.get("error"))
+            or fallback
+        )
+    return fallback
+
 def get_status_color(status):
     """Get color for status badge"""
     colors = {
@@ -124,8 +142,11 @@ def parse_qr_session_id(payload: str, fallback_session_id: str) -> str:
     return fallback_session_id
 
 
-def build_direct_attendance_link(session_id: str, qr_payload: str) -> str:
-    query = urlencode({"sessionId": session_id, "qr": qr_payload})
+def build_direct_attendance_link(session_id: str, qr_payload: str | None = None) -> str:
+    query_params = {"sessionId": session_id}
+    if qr_payload:
+        query_params["qr"] = qr_payload
+    query = urlencode(query_params)
     return f"{FRONTEND_BASE_URL}/attendance?{query}"
 
 
@@ -444,6 +465,9 @@ def main():
                                 st.info("QR display is restricted to instructor and admin roles.")
                             elif not session_requires_qr(session):
                                 st.caption("QR check-in is disabled for this session. Students can submit attendance directly from the attendance page.")
+                                direct_link = build_direct_attendance_link(session['id'])
+                                st.caption("Direct attendance link (for testing)")
+                                st.code(direct_link)
                             else:
                                 state_key = f"session_qr_{session['id']}"
                                 qr_payload = st.session_state.get(state_key)
@@ -536,7 +560,7 @@ def main():
                 show_session_details(selected_session_id, sessions, active_course_ids)
 
         else:
-            st.error("Failed to load sessions.")
+            st.error(f"Failed to load sessions ({response.status_code}): {response_error(response)}")
 
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
