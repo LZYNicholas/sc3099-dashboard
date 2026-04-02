@@ -140,8 +140,34 @@ def response_error(response: requests.Response | None, fallback: str = "Unknown 
         return text
     return fallback
 
+
+def fetch_active_instructors() -> tuple[list[dict], str | None]:
+    response = api_get("/users/", {"role": "instructor", "is_active": True, "limit": 100})
+    if response is None:
+        return [], "Failed to connect to server"
+    if response.status_code != 200:
+        return [], response_error(response, "Failed to load instructors")
+
+    instructors = []
+    for user in response_items(response):
+        user_id = str(user.get("id") or "").strip()
+        if not user_id:
+            continue
+        full_name = str(user.get("full_name") or "Unnamed Instructor").strip()
+        email = str(user.get("email") or "").strip()
+        label = f"{full_name} ({email})" if email else full_name
+        instructors.append({
+            "id": user_id,
+            "label": label,
+        })
+
+    instructors.sort(key=lambda item: item["label"].lower())
+    return instructors, None
+
 st.title("Course & Session Management")
 st.markdown("Create and manage courses and sessions for student attendance.")
+
+current_role = str((st.session_state.get("user") or {}).get("role") or "").strip().lower()
 
 st.markdown("---")
 
@@ -154,104 +180,121 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Create Course", "Create Session",
 with tab1:
     st.subheader("Create New Course")
     st.markdown("Create a new course for attendance tracking.")
+    if current_role != "admin":
+        st.info("Only admins can create courses and assign instructors.")
+    else:
+        instructors, instructor_error = fetch_active_instructors()
 
-    with st.form("create_course_form"):
-        col1, col2 = st.columns(2)
+        if instructor_error:
+            st.error(f"Could not load instructors: {instructor_error}")
+        elif not instructors:
+            st.warning("No active instructors were found. Create or activate an instructor account first.")
 
-        with col1:
-            course_code = st.text_input(
-                "Course Code *",
-                placeholder="CS3099",
-                help="Unique course code (e.g., CS3099)"
-            )
-            course_name = st.text_input(
-                "Course Name *",
-                placeholder="Capstone Project",
-                help="Full name of the course"
-            )
-            semester = st.text_input(
-                "Semester *",
-                placeholder="AY2024-25 Sem 2",
-                help="Academic semester"
-            )
-            instructor_id = st.text_input(
-                "Instructor ID *",
-                placeholder="UUID of assigned instructor",
-                help="Required by API spec: assign course owner instructor"
+        with st.form("create_course_form"):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                course_code = st.text_input(
+                    "Course Code *",
+                    placeholder="CS3099",
+                    help="Unique course code (e.g., CS3099)"
+                )
+                course_name = st.text_input(
+                    "Course Name *",
+                    placeholder="Capstone Project",
+                    help="Full name of the course"
+                )
+                semester = st.text_input(
+                    "Semester *",
+                    placeholder="AY2024-25 Sem 2",
+                    help="Academic semester"
+                )
+                selected_instructor = st.selectbox(
+                    "Instructor *",
+                    options=instructors,
+                    format_func=lambda option: option["label"],
+                    index=None,
+                    placeholder="Select an instructor",
+                    disabled=bool(instructor_error) or not instructors,
+                    help="Assign the course owner instructor"
+                )
+
+            with col2:
+                venue_name = st.text_input(
+                    "Default Venue",
+                    placeholder="COM1-0212",
+                    help="Default venue for sessions"
+                )
+                venue_lat = st.number_input(
+                    "Venue Latitude",
+                    value=1.2950,
+                    format="%.6f",
+                    help="GPS latitude of venue"
+                )
+                venue_lon = st.number_input(
+                    "Venue Longitude",
+                    value=103.7737,
+                    format="%.6f",
+                    help="GPS longitude of venue"
+                )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                geofence_radius = st.number_input(
+                    "Geofence Radius (meters)",
+                    value=100,
+                    min_value=10,
+                    max_value=1000,
+                    help="How far from venue students can check in"
+                )
+            with col2:
+                risk_threshold = st.slider(
+                    "Risk Threshold",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.5,
+                    step=0.1,
+                    help="Check-ins above this score will be flagged"
+                )
+
+            submit_course = st.form_submit_button(
+                "Create Course",
+                type="primary",
+                use_container_width=True,
+                disabled=bool(instructor_error) or not instructors
             )
 
-        with col2:
-            venue_name = st.text_input(
-                "Default Venue",
-                placeholder="COM1-0212",
-                help="Default venue for sessions"
-            )
-            venue_lat = st.number_input(
-                "Venue Latitude",
-                value=1.2950,
-                format="%.6f",
-                help="GPS latitude of venue"
-            )
-            venue_lon = st.number_input(
-                "Venue Longitude",
-                value=103.7737,
-                format="%.6f",
-                help="GPS longitude of venue"
-            )
+            if submit_course:
+                if not course_code or not course_name or not semester or not selected_instructor:
+                    st.error("Please fill in all required fields and choose an instructor.")
+                else:
+                    normalized_code = course_code.strip().upper()
+                    normalized_semester = semester.strip()
 
-        col1, col2 = st.columns(2)
-        with col1:
-            geofence_radius = st.number_input(
-                "Geofence Radius (meters)",
-                value=100,
-                min_value=10,
-                max_value=1000,
-                help="How far from venue students can check in"
-            )
-        with col2:
-            risk_threshold = st.slider(
-                "Risk Threshold",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                step=0.1,
-                help="Check-ins above this score will be flagged"
-            )
+                    course_data = {
+                        "code": normalized_code,
+                        "name": course_name.strip(),
+                        "semester": normalized_semester,
+                        "instructor_id": selected_instructor["id"],
+                        "venue_name": venue_name or None,
+                        "venue_latitude": venue_lat,
+                        "venue_longitude": venue_lon,
+                        "geofence_radius_meters": geofence_radius,
+                        "risk_threshold": risk_threshold
+                    }
 
-        submit_course = st.form_submit_button("Create Course", type="primary", use_container_width=True)
+                    with st.spinner("Creating course..."):
+                        response = api_post("/courses/", course_data)
 
-        if submit_course:
-            if not course_code or not course_name or not semester or not instructor_id:
-                st.error("Please fill in all required fields (Course Code, Name, Semester, Instructor ID)")
-            else:
-                normalized_code = course_code.strip().upper()
-                normalized_semester = semester.strip()
-                normalized_instructor_id = instructor_id.strip()
-
-                course_data = {
-                    "code": normalized_code,
-                    "name": course_name.strip(),
-                    "semester": normalized_semester,
-                    "instructor_id": normalized_instructor_id,
-                    "venue_name": venue_name or None,
-                    "venue_latitude": venue_lat,
-                    "venue_longitude": venue_lon,
-                    "geofence_radius_meters": geofence_radius,
-                    "risk_threshold": risk_threshold
-                }
-
-                with st.spinner("Creating course..."):
-                    response = api_post("/courses/", course_data)
-
-                    if response is not None and response.status_code == 201:
-                        result = response.json()
-                        st.success("Course created successfully!")
-                        st.json(result)
-                    elif response is not None:
-                        error = response_error(response)
-                        st.error(f"Failed to create course: {error}")
-                    else:
-                        st.error("Failed to connect to server")
+                        if response is not None and response.status_code == 201:
+                            result = response.json()
+                            st.success("Course created successfully!")
+                            st.json(result)
+                        elif response is not None:
+                            error = response_error(response)
+                            st.error(f"Failed to create course: {error}")
+                        else:
+                            st.error("Failed to connect to server")
 
     # List existing courses
     st.markdown("---")

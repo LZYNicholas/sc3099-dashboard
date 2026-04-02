@@ -93,11 +93,11 @@ def fetch_session_qr(session_id):
             qr_expires_at = payload.get('qr_expires_at') or payload.get('qr_code_expires_at')
             qr_code = payload.get('qr_code')
 
-            if not qr_payload or not qr_expires_at:
+            if not qr_payload:
                 return False, 'QR is not available for this session'
 
             ttl_seconds = payload.get('qr_ttl_seconds')
-            if ttl_seconds is None:
+            if ttl_seconds is None and qr_expires_at:
                 ttl_seconds = get_remaining_qr_ttl(qr_expires_at)
 
             return True, {
@@ -132,14 +132,13 @@ def build_direct_attendance_link(session_id: str, qr_payload: str) -> str:
 def render_live_countdown(expires_at, session_id):
     expiry_ts = parse_iso_utc(expires_at)
     if expiry_ts is None:
-        st.caption("Expires in: unavailable")
         return
 
     expires_at_ms = int(expiry_ts.timestamp() * 1000)
     timer_element_id = f"qr-timer-{session_id}"
     components.html(
         f"""
-        <div id=\"{timer_element_id}\" style=\"font-family: sans-serif; font-size: 0.82rem; color: rgba(49, 51, 63, 0.72); margin: 0; padding: 0; line-height: 1.2;\">Expires in: --:--</div>
+        <div id=\"{timer_element_id}\" style=\"font-family: sans-serif; font-size: 0.82rem; color: rgba(49, 51, 63, 0.72); margin: 0; padding: 0; line-height: 1.2;\">Available while check-in is open</div>
         <script>
         (function() {{
             const target = {expires_at_ms};
@@ -153,10 +152,10 @@ def render_live_countdown(expires_at, session_id):
 
                 if (node) {{
                     if (totalSeconds <= 0) {{
-                        node.textContent = 'Expired - click Regenerate QR';
+                        node.textContent = 'QR unavailable after check-in closes';
                         node.style.color = '#b42318';
                     }} else {{
-                        node.textContent = `Expires in: ${{minutes}}:${{String(seconds).padStart(2, '0')}}`;
+                        node.textContent = `Available for: ${{minutes}}:${{String(seconds).padStart(2, '0')}}`;
                         node.style.color = totalSeconds <= 60 ? '#b42318' : 'rgba(49, 51, 63, 0.72)';
                     }}
                 }}
@@ -174,12 +173,11 @@ def render_live_countdown(expires_at, session_id):
 def render_qr_block(qr_data, session_id):
     payload = qr_data.get('qr_payload', '')
     expires_at = qr_data.get('qr_expires_at')
-    ttl = get_remaining_qr_ttl(expires_at)
-    qr_data['qr_ttl_seconds'] = ttl
     qr_code_image = qr_data.get('qr_code')
 
-    st.caption(f"Expires at {format_datetime_local(expires_at)}")
-    render_live_countdown(expires_at, session_id)
+    if expires_at:
+        st.caption(f"Available until {format_datetime_local(expires_at)}")
+        render_live_countdown(expires_at, session_id)
 
     st.code(payload, language='json')
 
@@ -450,14 +448,14 @@ def main():
                                 state_key = f"session_qr_{session['id']}"
                                 qr_payload = st.session_state.get(state_key)
 
-                                ttl = get_remaining_qr_ttl(qr_payload.get('qr_expires_at')) if isinstance(qr_payload, dict) else 0
-                                if isinstance(qr_payload, dict):
-                                    qr_payload['qr_ttl_seconds'] = ttl
-
                                 btn_col1, btn_col2 = st.columns([1, 3])
                                 with btn_col1:
-                                    button_label = "Generate QR" if not qr_payload else "Regenerate QR"
-                                    if st.button(button_label, key=f"qr_btn_{session['id']}", use_container_width=True):
+                                    button_label = "Show QR" if qr_payload else "Generate QR"
+                                    if st.button(
+                                        button_label,
+                                        key=f"qr_btn_{session['id']}",
+                                        use_container_width=True
+                                    ):
                                         ok, result = fetch_session_qr(session['id'])
                                         if ok:
                                             qr_payload = result
@@ -465,7 +463,7 @@ def main():
                                         else:
                                             st.error(result or "Could not generate QR")
                                 with btn_col2:
-                                    st.caption("Generate a QR when you are ready to display it for student check-in.")
+                                    st.caption("Display the session QR while the check-in window is open.")
 
                                 if qr_payload:
                                     render_qr_block(qr_payload, session['id'])
