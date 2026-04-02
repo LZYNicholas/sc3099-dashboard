@@ -16,6 +16,20 @@ st.set_page_config(page_title="Overview - SAIV Dashboard", layout="wide")
 def get_headers():
     return get_auth_headers()
 
+
+def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
+    if response is None:
+        return "Connection error"
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get('detail') or payload.get('message') or payload.get('error')
+        if detail:
+            return str(detail)
+    return fallback
+
 AUTO_REFRESH_SECONDS = 30
 
 
@@ -226,12 +240,12 @@ def main():
                     else:
                         st.success("No flagged check-ins requiring review.")
                 else:
-                    st.info("Could not load flagged check-ins.")
+                    st.info(f"Could not load flagged check-ins ({flagged_response.status_code}): {response_error(flagged_response)}")
             except Exception as e:
                 st.warning(f"Could not load flagged check-ins: {str(e)}")
 
         else:
-            st.error("Failed to load statistics. Please try again.")
+            st.error(f"Failed to load statistics ({response.status_code}): {response_error(response)}")
 
     except Exception as e:
         st.error(f"Connection error: {str(e)}")

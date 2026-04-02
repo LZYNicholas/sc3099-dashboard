@@ -16,7 +16,7 @@ require_auth()
 
 # API Configuration
 SG_TZ = ZoneInfo("Asia/Singapore")
-_API_GET_CACHE: dict[tuple[str, tuple[tuple[str, str], ...]], requests.Response | None] = {}
+_API_GET_CACHE: dict[tuple[str, tuple[tuple[str, str], ...], str], requests.Response | None] = {}
 
 
 def to_api_datetime(value: datetime) -> str:
@@ -48,7 +48,7 @@ def api_post(endpoint: str, data: dict):
 
 def api_get(endpoint: str, params: dict = None):
     """Make GET request to API"""
-    cache_key: tuple[str, tuple[tuple[str, str], ...]] | None = None
+    cache_key: tuple[str, tuple[tuple[str, str], ...], str] | None = None
     try:
         query_params = None
         if params is not None:
@@ -56,9 +56,11 @@ def api_get(endpoint: str, params: dict = None):
                 k: bool_query(v) if isinstance(v, bool) else v
                 for k, v in params.items()
             }
+        auth_header = get_headers().get("Authorization", "")
         cache_key = (
             endpoint,
-            tuple(sorted((str(k), str(v)) for k, v in (query_params or {}).items()))
+            tuple(sorted((str(k), str(v)) for k, v in (query_params or {}).items())),
+            auth_header,
         )
         if cache_key in _API_GET_CACHE:
             return _API_GET_CACHE[cache_key]
@@ -572,7 +574,7 @@ with tab2:
         else:
             st.info("No sessions found. Create one above!")
     else:
-        st.warning("Could not load sessions")
+        st.warning(f"Could not load sessions: {response_error(response)}")
 
 
 # ============================================================================
