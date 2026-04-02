@@ -150,47 +150,6 @@ def build_direct_attendance_link(session_id: str, qr_payload: str | None = None)
     return f"{FRONTEND_BASE_URL}/attendance?{query}"
 
 
-def render_live_countdown(expires_at, session_id):
-    expiry_ts = parse_iso_utc(expires_at)
-    if expiry_ts is None:
-        return
-
-    expires_at_ms = int(expiry_ts.timestamp() * 1000)
-    timer_element_id = f"qr-timer-{session_id}"
-    components.html(
-        f"""
-        <div id=\"{timer_element_id}\" style=\"font-family: sans-serif; font-size: 0.82rem; color: rgba(49, 51, 63, 0.72); margin: 0; padding: 0; line-height: 1.2;\">Available while check-in is open</div>
-        <script>
-        (function() {{
-            const target = {expires_at_ms};
-            const node = document.getElementById("{timer_element_id}");
-
-            function render() {{
-                const remainingMs = Math.max(0, target - Date.now());
-                const totalSeconds = Math.floor(remainingMs / 1000);
-                const minutes = Math.floor(totalSeconds / 60);
-                const seconds = totalSeconds % 60;
-
-                if (node) {{
-                    if (totalSeconds <= 0) {{
-                        node.textContent = 'QR unavailable after check-in closes';
-                        node.style.color = '#b42318';
-                    }} else {{
-                        node.textContent = `Available for: ${{minutes}}:${{String(seconds).padStart(2, '0')}}`;
-                        node.style.color = totalSeconds <= 60 ? '#b42318' : 'rgba(49, 51, 63, 0.72)';
-                    }}
-                }}
-            }}
-
-            render();
-            window.setInterval(render, 1000);
-        }})();
-        </script>
-        """,
-        height=20,
-    )
-
-
 def render_qr_block(qr_data, session_id):
     payload = qr_data.get('qr_payload', '')
     expires_at = qr_data.get('qr_expires_at')
@@ -198,9 +157,6 @@ def render_qr_block(qr_data, session_id):
 
     if expires_at:
         st.caption(f"Available until {format_datetime_local(expires_at)}")
-        render_live_countdown(expires_at, session_id)
-
-    st.code(payload, language='json')
 
     if qr_code_image:
         st.image(qr_code_image, caption=f"Session QR - {session_id}", width=280)
