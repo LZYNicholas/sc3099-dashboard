@@ -174,6 +174,11 @@ with tab1:
                 placeholder="AY2024-25 Sem 2",
                 help="Academic semester"
             )
+            instructor_id = st.text_input(
+                "Instructor ID *",
+                placeholder="UUID of assigned instructor",
+                help="Required by API spec: assign course owner instructor"
+            )
 
         with col2:
             venue_name = st.text_input(
@@ -216,16 +221,18 @@ with tab1:
         submit_course = st.form_submit_button("Create Course", type="primary", use_container_width=True)
 
         if submit_course:
-            if not course_code or not course_name or not semester:
-                st.error("Please fill in all required fields (Course Code, Name, Semester)")
+            if not course_code or not course_name or not semester or not instructor_id:
+                st.error("Please fill in all required fields (Course Code, Name, Semester, Instructor ID)")
             else:
                 normalized_code = course_code.strip().upper()
                 normalized_semester = semester.strip()
+                normalized_instructor_id = instructor_id.strip()
 
                 course_data = {
                     "code": normalized_code,
                     "name": course_name.strip(),
                     "semester": normalized_semester,
+                    "instructor_id": normalized_instructor_id,
                     "venue_name": venue_name or None,
                     "venue_latitude": venue_lat,
                     "venue_longitude": venue_lon,
