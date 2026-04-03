@@ -17,6 +17,10 @@ def get_headers():
 
 def get_severity(action: str) -> str:
     """Classify audit action into severity level for color-coding."""
+    # Handle cases where action might be a dict or other non-string type
+    if not isinstance(action, str):
+        action = str(action)
+    
     action_lower = action.lower()
     if any(k in action_lower for k in ('security_violation', 'login_failed', 'rejected')):
         return 'critical'
@@ -137,11 +141,23 @@ def main():
                 action_counts = {}
                 for log in logs:
                     action = log.get('action', 'unknown')
+                    # Convert non-string actions to string
+                    if not isinstance(action, str):
+                        action = str(action)
                     action_counts[action] = action_counts.get(action, 0) + 1
                 most_common = max(action_counts, key=action_counts.get) if action_counts else 'N/A'
                 st.metric("Most Common Action", most_common)
             with col4:
-                suspicious = sum(1 for log in logs if 'flag' in log.get('action', '').lower() or 'suspicious' in log.get('details', '').lower())
+                suspicious = 0
+                for log in logs:
+                    action = log.get('action', '')
+                    if not isinstance(action, str):
+                        action = str(action)
+                    details = log.get('details', '')
+                    if not isinstance(details, str):
+                        details = str(details)
+                    if 'flag' in action.lower() or 'suspicious' in details.lower():
+                        suspicious += 1
                 st.metric("Flagged Events", suspicious)
 
             st.markdown("---")
@@ -165,7 +181,11 @@ def main():
                         pass
 
                 entity_id = log.get('resource_id') or log.get('entity_id', 'N/A')
+                if not isinstance(entity_id, str):
+                    entity_id = str(entity_id)
                 entity_type = log.get('resource_type') or log.get('entity_type', 'N/A')
+                if not isinstance(entity_type, str):
+                    entity_type = str(entity_type)
                 details_raw = log.get('details', '')
                 if isinstance(details_raw, dict):
                     details_str = str(details_raw)
