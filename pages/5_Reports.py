@@ -6,7 +6,7 @@ import requests
 import pandas as pd
 from datetime import datetime
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import extract_items
+from lib.response_utils import extract_items, fetch_all_items
 
 # Page configuration
 st.set_page_config(page_title="Reports - SAIV Dashboard", layout="wide")
@@ -60,20 +60,27 @@ def _offer_download(response, export_format, base_filename, title):
     )
 
 
+def _load_all_courses():
+    try:
+        return fetch_all_items(
+            f"{API_BASE_URL}/courses/",
+            headers=get_headers(),
+            timeout=10,
+            page_size=200,
+        )
+    except Exception:
+        return []
+
+
 def course_reports():
     """Course attendance reports"""
     st.subheader("Course Attendance Reports")
     st.markdown("Export attendance data for entire courses.")
 
     try:
-        response = requests.get(
-            f"{API_BASE_URL}/courses/",
-            headers=get_headers(),
-            timeout=10
-        )
+        courses = _load_all_courses()
 
-        if response.status_code == 200:
-            courses = extract_items(response.json())
+        if courses:
 
             if not courses:
                 st.info("No courses available. Create a course first.")
@@ -147,14 +154,9 @@ def session_reports():
     st.markdown("Export attendance data for individual sessions.")
 
     try:
-        courses_response = requests.get(
-            f"{API_BASE_URL}/courses/",
-            headers=get_headers(),
-            timeout=10
-        )
+        courses = _load_all_courses()
 
-        if courses_response.status_code == 200:
-            courses = extract_items(courses_response.json())
+        if courses:
 
             if not courses:
                 st.info("No courses available.")
@@ -265,13 +267,8 @@ def custom_reports():
             end_date = st.date_input("End Date", key="custom_end")
 
         try:
-            courses_response = requests.get(
-                f"{API_BASE_URL}/courses/",
-                headers=get_headers(),
-                timeout=10
-            )
-            if courses_response.status_code == 200:
-                raw_courses = extract_items(courses_response.json())
+            raw_courses = _load_all_courses()
+            if raw_courses:
                 courses = [
                     c for c in raw_courses
                     if isinstance(c, dict) and c.get('id')

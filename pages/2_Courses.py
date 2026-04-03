@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import bool_query, extract_items
+from lib.response_utils import bool_query, fetch_all_items
 
 # Page configuration
 st.set_page_config(page_title="Courses - SAIV Dashboard", layout="wide")
@@ -32,7 +32,7 @@ def response_error(response: requests.Response | None, fallback: str = "Unknown 
 def main():
     require_auth()
     current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
-    if current_role not in {"ta", "instructor", "admin"}:
+    if current_role not in {"instructor", "admin"}:
         st.error("Access denied. This page is restricted to instructors and admins.")
         st.stop()
 
@@ -41,15 +41,15 @@ def main():
 
     # Fetch only active courses (no analytics for deleted courses)
     try:
-        response = requests.get(
+        courses = fetch_all_items(
             f"{API_BASE_URL}/courses/",
-            params={"is_active": bool_query(True), "limit": 100},
             headers=get_headers(),
-            timeout=10
+            params={"is_active": bool_query(True)},
+            timeout=10,
+            page_size=200,
         )
 
-        if response.status_code == 200:
-            courses = extract_items(response.json())
+        if courses:
 
             if not courses:
                 st.info("No active courses found. Create a course in the Manage page.")
@@ -225,7 +225,7 @@ def main():
                     st.warning(f"Could not load enrollments: {str(e)}")
 
         else:
-            st.error(f"Failed to load courses ({response.status_code}): {response_error(response)}")
+            st.error("Failed to load courses or no courses were returned.")
 
     except Exception as e:
         st.error(f"Connection error: {str(e)}")

@@ -79,6 +79,43 @@ def api_get(endpoint: str, params: dict = None):
             _API_GET_CACHE[cache_key] = None
         return None
 
+
+def fetch_all_courses(is_active: bool | None = None, page_size: int = 200) -> list[dict]:
+    items: list[dict] = []
+    offset = 0
+
+    while True:
+        params: dict[str, object] = {"limit": page_size, "offset": offset}
+        if is_active is not None:
+            params["is_active"] = is_active
+
+        response = api_get("/courses/", params)
+        if response is None or response.status_code != 200:
+            break
+
+        page_items = response_items(response)
+        if not page_items:
+            break
+
+        items.extend(page_items)
+
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            total = payload.get("total")
+            if isinstance(total, int) and len(items) >= total:
+                break
+
+        if len(page_items) < page_size:
+            break
+
+        offset += page_size
+
+    return items
+
 def api_patch(endpoint: str, data: dict):
     """Make PATCH request to API"""
     try:
@@ -170,7 +207,7 @@ st.title("Course & Session Management")
 st.markdown("Create and manage courses and sessions for student attendance.")
 
 current_role = str((st.session_state.get("user") or {}).get("role") or "").strip().lower()
-if current_role not in {"ta", "instructor", "admin"}:
+if current_role not in {"instructor", "admin"}:
     st.error("Access denied. This page is restricted to instructors and admins.")
     st.stop()
 
@@ -308,9 +345,8 @@ with tab1:
     if st.button("Refresh Courses"):
         st.rerun()
 
-    response = api_get("/courses/", {"limit": 50, "is_active": True})
-    if response is not None and response.status_code == 200:
-        courses = response_items(response)
+    courses = fetch_all_courses(is_active=True)
+    if courses:
         sessions_by_course: dict[str, list[dict]] = {}
         sessions_response = api_get("/sessions/", {"limit": 500})
         if sessions_response is not None and sessions_response.status_code == 200:
@@ -318,57 +354,54 @@ with tab1:
                 course_id = session.get('course_id')
                 if isinstance(course_id, str):
                     sessions_by_course.setdefault(course_id, []).append(session)
-        if courses:
-            for course in courses:
-                with st.expander(f"{course.get('code')} - {course.get('name')}"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**ID:** `{course.get('id')}`")
-                        st.write(f"**Semester:** {course.get('semester')}")
-                        st.write(f"**Venue:** {course.get('venue_name', 'Not set')}")
-                    with col2:
-                        st.write(f"**Geofence:** {course.get('geofence_radius_meters', 100)}m")
-                        st.write(f"**Risk Threshold:** {course.get('risk_threshold', 0.5)}")
-                        st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
-                    
-                    # Delete button - only for active courses
-                    if course.get('is_active'):
-                        # Check if course has any sessions (from preloaded sessions map)
-                        course_sessions = sessions_by_course.get(course.get('id'), [])
+        for course in courses:
+            with st.expander(f"{course.get('code')} - {course.get('name')}"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**ID:** `{course.get('id')}`")
+                    st.write(f"**Semester:** {course.get('semester')}")
+                    st.write(f"**Venue:** {course.get('venue_name', 'Not set')}")
+                with col2:
+                    st.write(f"**Geofence:** {course.get('geofence_radius_meters', 100)}m")
+                    st.write(f"**Risk Threshold:** {course.get('risk_threshold', 0.5)}")
+                    st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
 
-                        # Show warning if course has sessions
-                        if course_sessions:
-                            active_sessions = [s for s in course_sessions if s.get('status') in ['scheduled', 'active']]
-                            if active_sessions:
-                                st.warning(f"This course has {len(active_sessions)} scheduled/active session(s). Deleting will prevent new check-ins.")
+                # Delete button - only for active courses
+                if course.get('is_active'):
+                    # Check if course has any sessions (from preloaded sessions map)
+                    course_sessions = sessions_by_course.get(course.get('id'), [])
+
+                    # Show warning if course has sessions
+                    if course_sessions:
+                        active_sessions = [s for s in course_sessions if s.get('status') in ['scheduled', 'active']]
+                        if active_sessions:
+                            st.warning(f"This course has {len(active_sessions)} scheduled/active session(s). Deleting will prevent new check-ins.")
+                        else:
+                            st.caption(f"This course has {len(course_sessions)} session(s).")
+
+                    if st.button("Delete Course", key=f"delete_course_{course.get('id')}"):
+                        try:
+                            headers = {}
+                            token = st.session_state.get('access_token')
+                            if token:
+                                headers["Authorization"] = f"Bearer {token}"
+
+                            response = requests.delete(
+                                f"{API_BASE_URL}/courses/{course.get('id')}",
+                                headers=headers,
+                                timeout=10
+                            )
+
+                            if response.status_code == 204:
+                                st.success("Course deleted (deactivated)!")
+                                st.rerun()
                             else:
-                                st.caption(f"This course has {len(course_sessions)} session(s).")
-
-                        if st.button("Delete Course", key=f"delete_course_{course.get('id')}"):
-                            try:
-                                headers = {}
-                                token = st.session_state.get('access_token')
-                                if token:
-                                    headers["Authorization"] = f"Bearer {token}"
-
-                                response = requests.delete(
-                                    f"{API_BASE_URL}/courses/{course.get('id')}",
-                                    headers=headers,
-                                    timeout=10
-                                )
-
-                                if response.status_code == 204:
-                                    st.success("Course deleted (deactivated)!")
-                                    st.rerun()
-                                else:
-                                    error = response_error(response)
-                                    st.error(f"Failed to delete: {error}")
-                            except Exception as e:
-                                st.error(f"Connection error: {str(e)}")
-        else:
-            st.info("No courses found. Create one above!")
+                                error = response_error(response)
+                                st.error(f"Failed to delete: {error}")
+                        except Exception as e:
+                            st.error(f"Connection error: {str(e)}")
     else:
-        st.warning("Could not load courses")
+        st.info("No courses found. Create one above!")
 
 
 # ============================================================================
@@ -379,10 +412,7 @@ with tab2:
     st.markdown("Create a new attendance session for a course.")
 
     # Get only ACTIVE courses for dropdown - cannot create sessions for deleted courses
-    response = api_get("/courses/", {"limit": 100, "is_active": True})
-    courses = []
-    if response is not None and response.status_code == 200:
-        courses = response_items(response)
+    courses = fetch_all_courses(is_active=True)
 
     if not courses:
         st.warning("No courses found. Please create a course first.")
@@ -582,10 +612,7 @@ with tab2:
 
     # Get all sessions and active courses to check status
     response = api_get("/sessions/", {"limit": 50})
-    active_courses_resp = api_get("/courses/", {"limit": 100, "is_active": True})
-    active_course_ids_list = set()
-    if active_courses_resp is not None and active_courses_resp.status_code == 200:
-        active_course_ids_list = {c['id'] for c in response_items(active_courses_resp)}
+    active_course_ids_list = {c['id'] for c in fetch_all_courses(is_active=True)}
 
     if response is not None and response.status_code == 200:
         sessions = response_items(response)
@@ -629,10 +656,7 @@ with tab3:
     st.markdown("Enroll students in courses.")
 
     # Get only ACTIVE courses for dropdown - cannot enroll in deleted courses
-    response = api_get("/courses/", {"limit": 100, "is_active": True})
-    courses = []
-    if response is not None and response.status_code == 200:
-        courses = response_items(response)
+    courses = fetch_all_courses(is_active=True)
 
     if not courses:
         st.warning("No courses found. Please create a course first.")
@@ -758,11 +782,7 @@ with tab4:
         sessions = response_items(response)
 
     # Also get active courses to check if session's course is still active
-    active_courses_response = api_get("/courses/", {"limit": 100, "is_active": True})
-    active_course_ids = set()
-    if active_courses_response is not None and active_courses_response.status_code == 200:
-        active_courses = response_items(active_courses_response)
-        active_course_ids = {c['id'] for c in active_courses}
+    active_course_ids = {c['id'] for c in fetch_all_courses(is_active=True)}
 
     if not sessions:
         st.warning("No sessions found. Please create a session first.")
@@ -970,38 +990,34 @@ with tab5:
         st.rerun()
 
     # Get inactive courses
-    response = api_get("/courses/", {"limit": 100, "is_active": False})
-    if response is not None and response.status_code == 200:
-        deleted_courses = response_items(response)
-        if deleted_courses:
-            st.write(f"Found **{len(deleted_courses)}** deleted courses:")
-            
-            for course in deleted_courses:
-                with st.expander(f"{course.get('code')} - {course.get('name')}"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**ID:** `{course.get('id')}`")
-                        st.write(f"**Semester:** {course.get('semester')}")
-                    with col2:
-                        st.write(f"**Venue:** {course.get('venue_name', 'Not set')}")
-                        st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
-                    
-                    # Restore button
-                    if st.button("Restore Course", key=f"restore_course_{course.get('id')}"):
-                        restore_response = api_put(
-                            f"/courses/{course.get('id')}",
-                            {"is_active": True}
-                        )
-                        if restore_response is not None and restore_response.status_code == 200:
-                            st.success("Course restored!")
-                            st.rerun()
-                        else:
-                            error = response_error(restore_response)
-                            st.error(f"Failed to restore: {error}")
-        else:
-            st.info("No deleted courses found.")
+    deleted_courses = fetch_all_courses(is_active=False)
+    if deleted_courses:
+        st.write(f"Found **{len(deleted_courses)}** deleted courses:")
+
+        for course in deleted_courses:
+            with st.expander(f"{course.get('code')} - {course.get('name')}"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**ID:** `{course.get('id')}`")
+                    st.write(f"**Semester:** {course.get('semester')}")
+                with col2:
+                    st.write(f"**Venue:** {course.get('venue_name', 'Not set')}")
+                    st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
+
+                # Restore button
+                if st.button("Restore Course", key=f"restore_course_{course.get('id')}"):
+                    restore_response = api_put(
+                        f"/courses/{course.get('id')}",
+                        {"is_active": True}
+                    )
+                    if restore_response is not None and restore_response.status_code == 200:
+                        st.success("Course restored!")
+                        st.rerun()
+                    else:
+                        error = response_error(restore_response)
+                        st.error(f"Failed to restore: {error}")
     else:
-        st.warning("Could not load deleted courses")
+        st.info("No deleted courses found.")
 
 
 # ============================================================================

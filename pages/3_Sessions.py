@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import bool_query, extract_items
+from lib.response_utils import bool_query, extract_items, fetch_all_items
 
 try:
     from st_keyup import st_keyup
@@ -184,6 +184,10 @@ def can_manage_qr(role: str) -> bool:
     return role in {'instructor', 'admin'}
 
 
+def can_manage_session(role: str) -> bool:
+    return role in {'instructor', 'admin'}
+
+
 def update_session_status(session_id, status):
     try:
         response = requests.patch(
@@ -205,7 +209,7 @@ def main():
     require_auth()
     current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
     if current_role not in {"ta", "instructor", "admin"}:
-        st.error("Access denied. This page is restricted to instructors and admins.")
+        st.error("Access denied. This page is restricted to TAs, instructors, and admins.")
         st.stop()
 
     st.title("Session Monitoring")
@@ -213,13 +217,13 @@ def main():
 
     # Fetch active courses for filter (only show active courses)
     try:
-        courses_response = requests.get(
+        courses = fetch_all_items(
             f"{API_BASE_URL}/courses/",
-            params={"is_active": bool_query(True), "limit": 100},
             headers=get_headers(),
-            timeout=10
+            params={"is_active": bool_query(True)},
+            timeout=10,
+            page_size=200,
         )
-        courses = extract_items(courses_response.json()) if courses_response.status_code == 200 else []
     except:
         courses = []
 
@@ -249,7 +253,8 @@ def main():
 
     # Fetch sessions
     try:
-        url = f"{API_BASE_URL}/sessions/"
+        is_ta = current_role == 'ta'
+        url = f"{API_BASE_URL}/sessions/my-sessions" if is_ta else f"{API_BASE_URL}/sessions/"
         params = {"limit": 100}
         if course_filter != 'All':
             params['course_id'] = course_filter
@@ -324,24 +329,27 @@ def main():
                             with col3:
                                 st.metric("Check-ins", get_checkin_count(session))
 
-                            action_col1, action_col2 = st.columns(2)
-                            with action_col1:
-                                can_activate = not course_deleted
-                                if st.button("▶ Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True, type="primary"):
-                                    ok, error = update_session_status(session['id'], 'active')
-                                    if ok:
-                                        st.success("Session activated.")
-                                        st.rerun()
-                                    else:
-                                        st.error(error or "Failed to activate session.")
-                            with action_col2:
-                                if st.button("Cancel", key=f"cancel_{session['id']}", use_container_width=True):
-                                    ok, error = update_session_status(session['id'], 'cancelled')
-                                    if ok:
-                                        st.success("Session cancelled.")
-                                        st.rerun()
-                                    else:
-                                        st.error(error or "Failed to cancel session.")
+                            if can_manage_session(current_role):
+                                action_col1, action_col2 = st.columns(2)
+                                with action_col1:
+                                    can_activate = not course_deleted
+                                    if st.button("▶ Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True, type="primary"):
+                                        ok, error = update_session_status(session['id'], 'active')
+                                        if ok:
+                                            st.success("Session activated.")
+                                            st.rerun()
+                                        else:
+                                            st.error(error or "Failed to activate session.")
+                                with action_col2:
+                                    if st.button("Cancel", key=f"cancel_{session['id']}", use_container_width=True):
+                                        ok, error = update_session_status(session['id'], 'cancelled')
+                                        if ok:
+                                            st.success("Session cancelled.")
+                                            st.rerun()
+                                        else:
+                                            st.error(error or "Failed to cancel session.")
+                            else:
+                                st.caption("Session status controls are restricted to instructors and admins.")
 
                 st.markdown("---")
 
@@ -389,34 +397,37 @@ def main():
                             'cancelled': []
                         }.get(session.get('status'), [])
 
-                        action_col1, action_col2, action_col3 = st.columns(3)
-                        with action_col1:
-                            can_activate = 'active' in next_actions and not course_deleted
-                            if st.button("Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True):
-                                ok, error = update_session_status(session['id'], 'active')
-                                if ok:
-                                    st.success("Session activated.")
-                                    st.rerun()
-                                else:
-                                    st.error(error or "Failed to activate session.")
-                        with action_col2:
-                            can_close = 'closed' in next_actions
-                            if st.button("Close", key=f"close_{session['id']}", disabled=not can_close, use_container_width=True):
-                                ok, error = update_session_status(session['id'], 'closed')
-                                if ok:
-                                    st.success("Session closed.")
-                                    st.rerun()
-                                else:
-                                    st.error(error or "Failed to close session.")
-                        with action_col3:
-                            can_cancel = 'cancelled' in next_actions
-                            if st.button("Cancel", key=f"cancel_{session['id']}", disabled=not can_cancel, use_container_width=True):
-                                ok, error = update_session_status(session['id'], 'cancelled')
-                                if ok:
-                                    st.success("Session cancelled.")
-                                    st.rerun()
-                                else:
-                                    st.error(error or "Failed to cancel session.")
+                        if can_manage_session(current_role):
+                            action_col1, action_col2, action_col3 = st.columns(3)
+                            with action_col1:
+                                can_activate = 'active' in next_actions and not course_deleted
+                                if st.button("Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True):
+                                    ok, error = update_session_status(session['id'], 'active')
+                                    if ok:
+                                        st.success("Session activated.")
+                                        st.rerun()
+                                    else:
+                                        st.error(error or "Failed to activate session.")
+                            with action_col2:
+                                can_close = 'closed' in next_actions
+                                if st.button("Close", key=f"close_{session['id']}", disabled=not can_close, use_container_width=True):
+                                    ok, error = update_session_status(session['id'], 'closed')
+                                    if ok:
+                                        st.success("Session closed.")
+                                        st.rerun()
+                                    else:
+                                        st.error(error or "Failed to close session.")
+                            with action_col3:
+                                can_cancel = 'cancelled' in next_actions
+                                if st.button("Cancel", key=f"cancel_{session['id']}", disabled=not can_cancel, use_container_width=True):
+                                    ok, error = update_session_status(session['id'], 'cancelled')
+                                    if ok:
+                                        st.success("Session cancelled.")
+                                        st.rerun()
+                                    else:
+                                        st.error(error or "Failed to cancel session.")
+                        else:
+                            st.caption("Session status controls are restricted to instructors and admins.")
 
                         if window_open:
                             st.markdown("#### Session QR")

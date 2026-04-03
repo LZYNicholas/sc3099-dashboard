@@ -61,7 +61,7 @@ def _submit_review(checkin_id: str, decision: str, note: str = ""):
 def main():
     require_auth()
     current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
-    if current_role not in {"ta", "instructor", "admin"}:
+    if current_role not in {"instructor", "admin"}:
         st.error("Access denied. This page is restricted to instructors and admins.")
         st.stop()
 

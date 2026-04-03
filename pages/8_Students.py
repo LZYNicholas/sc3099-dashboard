@@ -6,7 +6,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import extract_items
+from lib.response_utils import fetch_all_items
 
 st.set_page_config(page_title="Students - SAIV Dashboard", layout="wide")
 
@@ -18,7 +18,7 @@ def get_headers():
 def main():
     require_auth()
     current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
-    if current_role not in {"ta", "instructor", "admin"}:
+    if current_role not in {"instructor", "admin"}:
         st.error("Access denied. This page is restricted to instructors and admins.")
         st.stop()
 
@@ -27,12 +27,12 @@ def main():
 
     # Course filter
     try:
-        courses_resp = requests.get(
+        courses = fetch_all_items(
             f"{API_BASE_URL}/courses/",
             headers=get_headers(),
             timeout=10,
+            page_size=200,
         )
-        courses = extract_items(courses_resp.json()) if courses_resp.status_code == 200 else []
     except Exception:
         courses = []
 
