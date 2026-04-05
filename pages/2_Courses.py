@@ -67,6 +67,19 @@ def main():
                 # Get course details
                 selected_course = next((c for c in courses if c['id'] == selected_course_id), None)
 
+                try:
+                    course_detail_response = requests.get(
+                        f"{API_BASE_URL}/courses/{selected_course_id}",
+                        headers=get_headers(),
+                        timeout=10
+                    )
+                    if course_detail_response.status_code == 200:
+                        detail_payload = course_detail_response.json()
+                        if isinstance(detail_payload, dict):
+                            selected_course = detail_payload
+                except Exception:
+                    pass
+
                 if selected_course:
                     venue_lat = selected_course.get('venue_latitude')
                     venue_lon = selected_course.get('venue_longitude')

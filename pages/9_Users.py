@@ -14,6 +14,21 @@ def get_headers():
     return get_auth_headers()
 
 
+def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
+    if response is None:
+        return "Connection error"
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        if detail:
+            return str(detail)
+    text = (response.text or "").strip() if hasattr(response, "text") else ""
+    return text or fallback
+
+
 def main():
     require_auth()
 
@@ -80,6 +95,7 @@ def main():
                 display = []
                 for u in filtered:
                     display.append({
+                        "ID": u.get("id", "N/A"),
                         "Name": u.get("full_name", "N/A"),
                         "Email": u.get("email", "N/A"),
                         "Role": u.get("role", "N/A").title(),
@@ -100,6 +116,70 @@ def main():
                     "text/csv",
                     use_container_width=True,
                 )
+
+                st.markdown("---")
+                st.subheader("User Detail & Update")
+
+                user_options = {
+                    f"{u.get('full_name', 'N/A')} ({u.get('email', 'N/A')})": str(u.get("id") or "")
+                    for u in filtered
+                    if u.get("id")
+                }
+                if user_options:
+                    selected_user_label = st.selectbox(
+                        "Select user",
+                        options=list(user_options.keys()),
+                        key="users_detail_select"
+                    )
+                    selected_user_id = user_options[selected_user_label]
+
+                    detail_response = requests.get(
+                        f"{API_BASE_URL}/users/{selected_user_id}",
+                        headers=get_headers(),
+                        timeout=10,
+                    )
+
+                    if detail_response.status_code == 200:
+                        user_detail = detail_response.json()
+                        st.json(user_detail)
+
+                        current_role = str(user_detail.get("role") or "student")
+                        role_options = ["student", "instructor", "ta", "admin"]
+                        default_role_index = role_options.index(current_role) if current_role in role_options else 0
+                        is_active_value = bool(user_detail.get("is_active", True))
+
+                        with st.form("update_selected_user_form"):
+                            new_role = st.selectbox(
+                                "Role",
+                                options=role_options,
+                                index=default_role_index,
+                            )
+                            new_is_active = st.checkbox("Active", value=is_active_value)
+                            submit_update = st.form_submit_button("Update User", use_container_width=True)
+
+                            if submit_update:
+                                patch_payload = {}
+                                if new_role != current_role:
+                                    patch_payload["role"] = new_role
+                                if new_is_active != is_active_value:
+                                    patch_payload["is_active"] = new_is_active
+
+                                if not patch_payload:
+                                    st.info("No changes detected.")
+                                else:
+                                    patch_response = requests.patch(
+                                        f"{API_BASE_URL}/users/{selected_user_id}",
+                                        json=patch_payload,
+                                        headers=get_headers(),
+                                        timeout=10,
+                                    )
+                                    if patch_response.status_code == 200:
+                                        st.success("User updated successfully.")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to update user: {response_error(patch_response)}")
+                    else:
+                        st.error(f"Failed to load user details: {response_error(detail_response)}")
             else:
                 st.info("No users match the current filters.")
 

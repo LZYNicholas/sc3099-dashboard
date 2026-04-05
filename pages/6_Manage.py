@@ -145,6 +145,24 @@ def api_put(endpoint: str, data: dict):
         return None
 
 
+def api_delete(endpoint: str):
+    """Make DELETE request to API"""
+    try:
+        headers = {}
+        auth = get_auth_headers().get("Authorization")
+        if auth:
+            headers["Authorization"] = auth
+        response = requests.delete(
+            f"{API_BASE_URL}{endpoint}",
+            headers=headers,
+            timeout=10
+        )
+        return response
+    except Exception as e:
+        st.error(f"Connection error: {str(e)}")
+        return None
+
+
 def response_items(response: requests.Response):
     try:
         return extract_items(response.json())
@@ -413,6 +431,10 @@ with tab2:
 
     # Get only ACTIVE courses for dropdown - cannot create sessions for deleted courses
     courses = fetch_all_courses(is_active=True)
+    instructors: list[dict] = []
+    instructor_error: str | None = None
+    if current_role == "admin":
+        instructors, instructor_error = fetch_active_instructors()
 
     if not courses:
         st.warning("No courses found. Please create a course first.")
@@ -426,6 +448,31 @@ with tab2:
             )
             selected_course = course_options[selected_course_name]
 
+            selected_session_instructor = None
+            if current_role == "admin":
+                default_instructor_id = str(selected_course.get('instructor_id') or "").strip()
+                default_index = None
+                if default_instructor_id:
+                    for idx, instructor in enumerate(instructors):
+                        if instructor.get("id") == default_instructor_id:
+                            default_index = idx
+                            break
+
+                selected_session_instructor = st.selectbox(
+                    "Session Instructor *",
+                    options=instructors,
+                    format_func=lambda option: option["label"],
+                    index=default_index,
+                    placeholder="Select an instructor",
+                    disabled=bool(instructor_error) or not instructors,
+                    help="Required when admin creates a session"
+                )
+
+                if instructor_error:
+                    st.error(f"Could not load instructors: {instructor_error}")
+                elif not instructors:
+                    st.warning("No active instructors were found. Create or activate an instructor first.")
+
             col1, col2 = st.columns(2)
 
             with col1:
@@ -436,7 +483,7 @@ with tab2:
                 )
                 session_type = st.selectbox(
                     "Session Type *",
-                    options=["lecture", "tutorial", "lab", "exam"],
+                    options=["lecture", "tutorial", "lab", "other"],
                     help="Type of session"
                 )
 
@@ -561,6 +608,12 @@ with tab2:
                 if not session_name:
                     validation_errors.append("Please enter a session name")
 
+                if current_role == "admin":
+                    if not instructors or instructor_error:
+                        validation_errors.append("Cannot create session: active instructors could not be loaded")
+                    elif not selected_session_instructor:
+                        validation_errors.append("Please select a session instructor")
+
                 if checkin_closes <= checkin_opens:
                     validation_errors.append("Check-in close time must be after open time")
 
@@ -589,6 +642,8 @@ with tab2:
                         "risk_threshold": session_risk_threshold,
                         "qr_code_enabled": qr_code_enabled
                     }
+                    if current_role == "admin" and selected_session_instructor:
+                        session_data["instructor_id"] = selected_session_instructor["id"]
 
                     with st.spinner("Creating session..."):
                         response = api_post("/sessions/", session_data)
@@ -671,23 +726,45 @@ with tab3:
 
         st.markdown("---")
 
-        # Single enrollment
+        # Single enrollment using student UUID (direct API method)
         st.markdown("##### Enroll Single Student")
+        
+        # Load all students for selection
+        students_response = api_get("/users/", {"role": "student", "limit": 200})
+        available_students = []
+        if students_response is not None and students_response.status_code == 200:
+            for user in response_items(students_response):
+                user_id = str(user.get("id") or "").strip()
+                if not user_id:
+                    continue
+                full_name = str(user.get("full_name") or "Unnamed").strip()
+                email = str(user.get("email") or "").strip()
+                label = f"{full_name} ({email})" if email else full_name
+                available_students.append({
+                    "id": user_id,
+                    "label": label,
+                    "email": email,
+                })
+            available_students.sort(key=lambda s: s["label"].lower())
+        
         with st.form("enroll_single_form"):
-            student_id = st.text_input(
-                "Student ID (UUID)",
-                placeholder="Enter student's user ID",
-                help="The UUID of the student user"
+            selected_student = st.selectbox(
+                "Select Student",
+                options=available_students,
+                format_func=lambda opt: opt["label"],
+                index=None,
+                placeholder="Search or select a student",
+                help="Choose a student to enroll in this course"
             )
 
             submit_enroll = st.form_submit_button("Enroll Student", use_container_width=True)
 
             if submit_enroll:
-                if not student_id:
-                    st.error("Please enter a student ID")
+                if not selected_student:
+                    st.error("Please select a student")
                 else:
                     enroll_data = {
-                        "student_id": student_id,
+                        "student_id": selected_student['id'],
                         "course_id": selected_course['id']
                     }
 
@@ -695,10 +772,13 @@ with tab3:
                         response = api_post("/enrollments/", enroll_data)
 
                         if response is not None and response.status_code == 201:
-                            st.success("Student enrolled successfully!")
+                            st.success(f"Student {selected_student['email']} enrolled successfully!")
                         elif response is not None:
                             error = response_error(response)
-                            st.error(f"Failed to enroll: {error}")
+                            if "already" in error.lower():
+                                st.info("Student is already enrolled in this course.")
+                            else:
+                                st.error(f"Failed to enroll: {error}")
                         else:
                             st.error("Failed to connect to server")
 
@@ -762,6 +842,30 @@ with tab3:
                 available_cols = [c for c in display_cols if c in df.columns]
                 if available_cols:
                     st.dataframe(df[available_cols], use_container_width=True)
+
+                st.markdown("##### Remove Enrollment")
+                enrollment_options = {
+                    f"{s.get('student_name', 'Unknown')} ({s.get('student_email', 'N/A')})": s
+                    for s in students
+                    if s.get('id')
+                }
+                if enrollment_options:
+                    selected_enrollment_label = st.selectbox(
+                        "Select enrollment to remove",
+                        options=list(enrollment_options.keys()),
+                        key="remove_enrollment_select"
+                    )
+                    selected_enrollment = enrollment_options[selected_enrollment_label]
+
+                    if st.button("Remove Enrollment", key="remove_enrollment_btn", type="secondary"):
+                        remove_response = api_delete(f"/enrollments/{selected_enrollment['id']}")
+                        if remove_response is not None and remove_response.status_code == 204:
+                            st.success("Enrollment removed.")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to remove enrollment: {response_error(remove_response)}")
+                else:
+                    st.caption("No removable enrollment IDs available from API response.")
             else:
                 st.info("No students enrolled yet")
         else:
@@ -1044,6 +1148,18 @@ with tab6:
         except Exception:
             return False
 
+    def update_device(device_id, headers, payload):
+        try:
+            resp = requests.patch(
+                f"{API_BASE_URL}/devices/{device_id}",
+                json=payload,
+                headers=headers,
+                timeout=10,
+            )
+            return resp
+        except Exception:
+            return None
+
     headers = get_headers()
     devices = fetch_my_devices(headers)
     if not devices:
@@ -1059,6 +1175,59 @@ with tab6:
                 st.write(f"**Active:** {'Yes' if device.get('is_active', True) else 'No'}")
                 st.write(f"**Trust Score:** {device.get('trust_score', 'N/A')}")
                 st.write(f"**Trusted:** {'Yes' if device.get('is_trusted', False) else 'No'}")
+                with st.form(f"update_device_{device['id']}"):
+                    st.markdown("##### Update Device")
+                    updated_name = st.text_input(
+                        "Device Name",
+                        value=str(device.get('device_name') or ""),
+                        key=f"device_name_{device['id']}",
+                    )
+                    updated_active = st.checkbox(
+                        "Active",
+                        value=bool(device.get('is_active', True)),
+                        key=f"device_active_{device['id']}",
+                    )
+
+                    updated_trusted = None
+                    if current_role == "admin":
+                        updated_trusted = st.checkbox(
+                            "Trusted (admin)",
+                            value=bool(device.get('is_trusted', False)),
+                            key=f"device_trusted_{device['id']}",
+                        )
+
+                    submit_update = st.form_submit_button("Save Device Changes", use_container_width=True)
+
+                    if submit_update:
+                        payload = {}
+                        original_name = str(device.get('device_name') or "")
+                        clean_name = updated_name.strip()
+
+                        if clean_name != original_name:
+                            if not clean_name:
+                                st.error("Device name cannot be empty.")
+                                payload = None
+                            else:
+                                payload["device_name"] = clean_name
+
+                        if payload is not None and updated_active != bool(device.get('is_active', True)):
+                            payload["is_active"] = updated_active
+
+                        if payload is not None and current_role == "admin" and updated_trusted is not None and updated_trusted != bool(device.get('is_trusted', False)):
+                            payload["is_trusted"] = updated_trusted
+
+                        if payload is None:
+                            pass
+                        elif not payload:
+                            st.info("No changes detected.")
+                        else:
+                            resp = update_device(device['id'], headers, payload)
+                            if resp is not None and resp.status_code == 200:
+                                st.success("Device updated.")
+                                st.rerun()
+                            else:
+                                st.error(f"Failed to update device: {response_error(resp)}")
+
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("Revoke Device", key=f"revoke_{device['id']}"):
@@ -1085,5 +1254,51 @@ with tab6:
                         st.rerun()
                     else:
                         st.error("Failed to revoke device by ID.")
+
+        st.markdown("---")
+        st.markdown("##### Admin: Update Any Device by ID")
+        with st.form("admin_update_device_by_id"):
+            target_device_id = st.text_input("Device ID", placeholder="UUID of device to update")
+            admin_device_name = st.text_input("Device Name (optional)", placeholder="Leave blank for no change")
+            admin_trusted_choice = st.selectbox(
+                "Trusted",
+                options=["No change", "Set true", "Set false"],
+                index=0,
+            )
+            admin_active_choice = st.selectbox(
+                "Active",
+                options=["No change", "Set true", "Set false"],
+                index=0,
+            )
+
+            submit_update_any = st.form_submit_button("Update Device by ID", use_container_width=True)
+
+            if submit_update_any:
+                clean_target_id = target_device_id.strip()
+                if not clean_target_id:
+                    st.error("Please enter a device ID.")
+                else:
+                    payload = {}
+                    clean_admin_name = admin_device_name.strip()
+                    if clean_admin_name:
+                        payload["device_name"] = clean_admin_name
+                    if admin_trusted_choice == "Set true":
+                        payload["is_trusted"] = True
+                    elif admin_trusted_choice == "Set false":
+                        payload["is_trusted"] = False
+                    if admin_active_choice == "Set true":
+                        payload["is_active"] = True
+                    elif admin_active_choice == "Set false":
+                        payload["is_active"] = False
+
+                    if not payload:
+                        st.info("No changes selected.")
+                    else:
+                        resp = update_device(clean_target_id, headers, payload)
+                        if resp is not None and resp.status_code == 200:
+                            st.success("Device updated.")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to update device: {response_error(resp)}")
 
 
