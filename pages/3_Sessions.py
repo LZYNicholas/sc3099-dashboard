@@ -611,35 +611,7 @@ def show_session_checkins(session_id):
                         if detail_response.status_code == 200:
                             detail = detail_response.json()
                             st.json(detail)
-                            # Appeal UI: only for student, own check-in, flagged/rejected, not already appealed
-                            user = st.session_state.get('user') or {}
-                            is_student = user.get('role') == 'student'
-                            is_owner = user.get('id') == detail.get('student_id')
-                            status = detail.get('status', '').lower()
-                            already_appealed = bool(detail.get('appeal_reason'))
-                            can_appeal = is_student and is_owner and status in {'flagged', 'rejected'} and not already_appealed
-                            if can_appeal:
-                                st.markdown('---')
-                                st.subheader('Appeal This Check-in')
-                                appeal_reason = st.text_area('Reason for Appeal', key=f"appeal_reason_{selected_checkin_id}", max_chars=300)
-                                if st.button('Submit Appeal', key=f"submit_appeal_{selected_checkin_id}", use_container_width=True, type="primary"):
-                                    if not appeal_reason.strip():
-                                        st.warning('Please provide a reason for your appeal.')
-                                    else:
-                                        try:
-                                            resp = requests.post(
-                                                f"{API_BASE_URL}/checkins/{selected_checkin_id}/appeal",
-                                                json={"appeal_reason": appeal_reason.strip()},
-                                                headers=get_headers(),
-                                                timeout=10
-                                            )
-                                            if resp.status_code == 200:
-                                                st.success('Appeal submitted successfully.')
-                                                st.rerun()
-                                            else:
-                                                st.error(f"Failed to submit appeal: {response_error(resp)}")
-                                        except Exception as e:
-                                            st.error(f"Connection error: {e}")
+                            # ...existing code...
                         else:
                             st.warning(f"Could not load check-in detail ({detail_response.status_code}): {response_error(detail_response)}")
             else:
