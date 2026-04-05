@@ -2,6 +2,7 @@
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import plotly.express as px
@@ -9,6 +10,10 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 
 # Page configuration
 st.set_page_config(page_title="Overview - SAIV Dashboard", layout="wide")
@@ -31,6 +36,26 @@ def response_error(response: requests.Response | None, fallback: str = "Unknown 
     return fallback
 
 AUTO_REFRESH_SECONDS = 30
+
+
+def _inject_auto_refresh(seconds: int) -> None:
+    if seconds <= 0:
+        return
+    interval_ms = int(seconds * 1000)
+    if st_autorefresh is not None:
+        st_autorefresh(interval=interval_ms, key=f"overview_autorefresh_{seconds}")
+        return
+    components.html(
+        f"""
+        <script>
+          setTimeout(function () {{
+            window.parent.location.reload();
+          }}, {interval_ms});
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def _submit_review(checkin_id: str, decision: str, note: str = ""):
@@ -67,6 +92,14 @@ def main():
 
     st.title("System Overview")
     st.markdown("Real-time statistics and system health monitoring.")
+    auto_refresh_seconds = st.sidebar.selectbox(
+        "Auto Refresh",
+        [0, 15, 30, 60],
+        index=2
+    )
+    if auto_refresh_seconds > 0:
+        _inject_auto_refresh(auto_refresh_seconds)
+        st.caption(f"Auto-refresh enabled every {auto_refresh_seconds}s")
 
     # Date range selector
     col1, col2 = st.columns([3, 1])

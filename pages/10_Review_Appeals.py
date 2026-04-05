@@ -4,9 +4,14 @@ Allows instructors/TAs to review flagged and appealed check-ins.
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import time
 from datetime import datetime
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 
 from lib.auth_state import (
     API_BASE_URL,
@@ -15,6 +20,26 @@ from lib.auth_state import (
 )
 
 st.set_page_config(page_title="Review Appeals - SAIV", layout="wide")
+
+
+def _inject_auto_refresh(seconds: int) -> None:
+    if seconds <= 0:
+        return
+    interval_ms = int(seconds * 1000)
+    if st_autorefresh is not None:
+        st_autorefresh(interval=interval_ms, key=f"review_autorefresh_{seconds}")
+        return
+    components.html(
+        f"""
+        <script>
+          setTimeout(function () {{
+            window.parent.location.reload();
+          }}, {interval_ms});
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def _format_dt(value):
@@ -250,6 +275,10 @@ def main():
         "Review check-ins that have been **flagged** by the risk system or **appealed** by students. "
         "You can approve or reject each one with optional review notes."
     )
+    auto_refresh_seconds = st.sidebar.selectbox("Auto Refresh", [0, 15, 30, 60], index=2)
+    if auto_refresh_seconds > 0:
+        _inject_auto_refresh(auto_refresh_seconds)
+        st.caption(f"Auto-refresh enabled every {auto_refresh_seconds}s")
 
     # Filter controls
     filter_col1, filter_col2 = st.columns([2, 1])

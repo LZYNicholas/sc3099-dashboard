@@ -1129,24 +1129,99 @@ with tab5:
 # ============================================================================
 with tab6:
     st.subheader("Device Management")
-    st.markdown("View your registered devices and revoke stale entries.")
+    st.markdown("View registered devices and revoke stale entries.")
+    FEEDBACK_KEY = "device_mgmt_feedback"
+
+    def device_ref(device: dict) -> str:
+        raw_id = str(device.get("id") or "").strip()
+        if len(raw_id) >= 8:
+            return f"DEV-{raw_id[:4].upper()}-{raw_id[-4:].upper()}"
+        return "DEV-UNKNOWN"
+
+    def owner_label(device: dict) -> str:
+        full_name = str(device.get("full_name") or "").strip()
+        email = str(device.get("email") or "").strip()
+        if full_name and email:
+            return f"{full_name} ({email})"
+        if email:
+            return email
+        user_id = str(device.get("user_id") or "").strip()
+        return user_id or "N/A"
+
+    def short_fingerprint(device: dict) -> str:
+        fp = str(device.get("device_fingerprint") or "").strip()
+        if len(fp) >= 12:
+            return f"{fp[:6]}...{fp[-6:]}"
+        return fp or "N/A"
+
+    def device_search_blob(device: dict) -> str:
+        fields = [
+            device_ref(device),
+            str(device.get("device_name") or ""),
+            str(device.get("platform") or ""),
+            str(device.get("full_name") or ""),
+            str(device.get("email") or ""),
+            str(device.get("user_id") or ""),
+            str(device.get("id") or ""),
+            str(device.get("device_fingerprint") or ""),
+        ]
+        return " ".join(fields).lower()
+
+    def set_feedback(level: str, message: str):
+        st.session_state[FEEDBACK_KEY] = {"level": level, "message": message}
+
+    feedback = st.session_state.pop(FEEDBACK_KEY, None)
+    if isinstance(feedback, dict):
+        level = str(feedback.get("level") or "").lower()
+        message = str(feedback.get("message") or "").strip()
+        if message:
+            if level == "success":
+                st.success(message)
+            elif level == "warning":
+                st.warning(message)
+            else:
+                st.error(message)
 
     def fetch_my_devices(headers):
         try:
             resp = requests.get(f"{API_BASE_URL}/devices/my-devices", headers=headers, timeout=10)
             if resp.status_code == 200:
                 payload = resp.json()
-                return payload if isinstance(payload, list) else payload.get("items", [])
+                return (payload if isinstance(payload, list) else payload.get("items", [])), None
+            return [], response_error(resp, "Failed to load your devices")
         except Exception:
-            pass
-        return []
+            return [], "Failed to connect while loading your devices"
+
+    def fetch_all_devices(headers):
+        try:
+            resp = requests.get(
+                f"{API_BASE_URL}/devices/",
+                headers=headers,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                return (payload.get("items", []) if isinstance(payload, dict) else []), None
+            return [], response_error(resp, "Failed to load device list")
+        except Exception:
+            return [], "Failed to connect while loading device list"
 
     def revoke_device(device_id, headers):
         try:
-            resp = requests.delete(f"{API_BASE_URL}/devices/{device_id}", headers=headers, timeout=10)
-            return resp.status_code == 204
+            delete_headers = {}
+            auth = headers.get("Authorization")
+            if auth:
+                delete_headers["Authorization"] = auth
+            resp = requests.delete(
+                f"{API_BASE_URL}/devices/{device_id}",
+                headers=delete_headers,
+                timeout=10
+            )
+            if resp.status_code == 204:
+                return True, None
+            return False, response_error(resp, "Failed to revoke device")
         except Exception:
-            return False
+            return False, "Failed to connect while revoking device"
 
     def update_device(device_id, headers, payload):
         try:
@@ -1161,27 +1236,81 @@ with tab6:
             return None
 
     headers = get_headers()
-    devices = fetch_my_devices(headers)
-    if not devices:
-        st.info("No devices found.")
+    fetch_error = None
+    if current_role == "admin":
+        devices, fetch_error = fetch_all_devices(headers)
+        if fetch_error:
+            st.warning(f"Global device list unavailable: {fetch_error}. Falling back to your own devices.")
+            devices, fallback_error = fetch_my_devices(headers)
+            if fallback_error:
+                fetch_error = f"{fetch_error}; fallback failed: {fallback_error}"
+            else:
+                fetch_error = None
     else:
-        for device in devices:
-            with st.expander(f"{device.get('device_name', 'Unknown Device')} ({device.get('platform', 'unknown')}) - Trusted: {device.get('is_trusted', False)}"):
+        devices, fetch_error = fetch_my_devices(headers)
+
+    if fetch_error:
+        st.error(fetch_error)
+
+    visible_devices = devices
+    if devices and current_role == "admin":
+        st.markdown("##### Find Device")
+        col_find_1, col_find_2, col_find_3 = st.columns([2, 1, 1])
+        with col_find_1:
+            search_term = st.text_input(
+                "Search by owner, email, device ref, fingerprint, or name",
+                placeholder="e.g. nicholas, DEV-1A2B-3C4D, 5f8a...9bc1",
+                key="admin_device_search",
+            ).strip().lower()
+        with col_find_2:
+            active_filter = st.selectbox("Active", options=["All", "Active", "Inactive"], index=0, key="admin_device_active_filter")
+        with col_find_3:
+            trusted_filter = st.selectbox("Trust", options=["All", "Trusted", "Untrusted"], index=0, key="admin_device_trust_filter")
+
+        visible_devices = []
+        for d in devices:
+            if search_term and search_term not in device_search_blob(d):
+                continue
+            if active_filter == "Active" and not bool(d.get("is_active", True)):
+                continue
+            if active_filter == "Inactive" and bool(d.get("is_active", True)):
+                continue
+            if trusted_filter == "Trusted" and not bool(d.get("is_trusted", False)):
+                continue
+            if trusted_filter == "Untrusted" and bool(d.get("is_trusted", False)):
+                continue
+            visible_devices.append(d)
+
+        st.caption(f"Showing {len(visible_devices)} of {len(devices)} devices")
+
+    if not visible_devices:
+        if current_role == "admin":
+            st.info("No matching devices found.")
+        else:
+            st.info("No devices found.")
+    else:
+        for device in visible_devices:
+            device_tag = device_ref(device)
+            title_owner = owner_label(device) if current_role == "admin" else ""
+            title_left = f"{device.get('device_name', 'Unknown Device')} [{device_tag}]"
+            title_right = f"{device.get('platform', 'unknown')} | Trusted: {device.get('is_trusted', False)}"
+            title = f"{title_left} - {title_owner} - {title_right}" if title_owner else f"{title_left} ({title_right})"
+            with st.expander(title):
+                st.write(f"**Device Ref:** `{device_tag}`")
                 st.write(f"**ID:** `{device.get('id')}`")
+                if current_role == "admin":
+                    st.write(f"**Owner:** {owner_label(device)}")
                 st.write(f"**User ID:** `{device.get('user_id', 'N/A')}`")
+                st.write(f"**Fingerprint:** `{short_fingerprint(device)}`")
                 st.write(f"**Platform:** {device.get('platform', 'unknown')}")
                 st.write(f"**First Seen:** {device.get('first_seen_at', 'N/A')}")
                 st.write(f"**Last Seen:** {device.get('last_seen_at', 'N/A')}")
+                st.write(f"**Total Check-ins:** {device.get('total_checkins', 0)}")
                 st.write(f"**Active:** {'Yes' if device.get('is_active', True) else 'No'}")
                 st.write(f"**Trust Score:** {device.get('trust_score', 'N/A')}")
                 st.write(f"**Trusted:** {'Yes' if device.get('is_trusted', False) else 'No'}")
                 with st.form(f"update_device_{device['id']}"):
                     st.markdown("##### Update Device")
-                    updated_name = st.text_input(
-                        "Device Name",
-                        value=str(device.get('device_name') or ""),
-                        key=f"device_name_{device['id']}",
-                    )
                     updated_active = st.checkbox(
                         "Active",
                         value=bool(device.get('is_active', True)),
@@ -1200,15 +1329,6 @@ with tab6:
 
                     if submit_update:
                         payload = {}
-                        original_name = str(device.get('device_name') or "")
-                        clean_name = updated_name.strip()
-
-                        if clean_name != original_name:
-                            if not clean_name:
-                                st.error("Device name cannot be empty.")
-                                payload = None
-                            else:
-                                payload["device_name"] = clean_name
 
                         if payload is not None and updated_active != bool(device.get('is_active', True)):
                             payload["is_active"] = updated_active
@@ -1223,82 +1343,23 @@ with tab6:
                         else:
                             resp = update_device(device['id'], headers, payload)
                             if resp is not None and resp.status_code == 200:
-                                st.success("Device updated.")
+                                set_feedback("success", "Device updated.")
                                 st.rerun()
                             else:
-                                st.error(f"Failed to update device: {response_error(resp)}")
+                                set_feedback("error", f"Failed to update device: {response_error(resp)}")
+                                st.rerun()
 
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("Revoke Device", key=f"revoke_{device['id']}"):
-                        if revoke_device(device['id'], headers):
-                            st.success("Device revoked.")
+                        revoked, revoke_error = revoke_device(device['id'], headers)
+                        if revoked:
+                            set_feedback("success", "Device revoked.")
                             st.experimental_rerun()
                         else:
-                            st.error("Failed to revoke device.")
+                            set_feedback("error", f"Failed to revoke device: {revoke_error}")
+                            st.experimental_rerun()
                 with col2:
-                    st.caption("Admins can still revoke any device by ID below.")
-
-    if current_role == "admin":
-        st.markdown("---")
-        st.markdown("##### Admin: Revoke Any Device by ID")
-        with st.form("admin_revoke_device_by_id"):
-            device_id = st.text_input("Device ID", placeholder="UUID of device to revoke")
-            submit_revoke_any = st.form_submit_button("Revoke by ID", use_container_width=True)
-            if submit_revoke_any:
-                if not device_id.strip():
-                    st.error("Please enter a device ID.")
-                else:
-                    if revoke_device(device_id.strip(), headers):
-                        st.success("Device revoked.")
-                        st.rerun()
-                    else:
-                        st.error("Failed to revoke device by ID.")
-
-        st.markdown("---")
-        st.markdown("##### Admin: Update Any Device by ID")
-        with st.form("admin_update_device_by_id"):
-            target_device_id = st.text_input("Device ID", placeholder="UUID of device to update")
-            admin_device_name = st.text_input("Device Name (optional)", placeholder="Leave blank for no change")
-            admin_trusted_choice = st.selectbox(
-                "Trusted",
-                options=["No change", "Set true", "Set false"],
-                index=0,
-            )
-            admin_active_choice = st.selectbox(
-                "Active",
-                options=["No change", "Set true", "Set false"],
-                index=0,
-            )
-
-            submit_update_any = st.form_submit_button("Update Device by ID", use_container_width=True)
-
-            if submit_update_any:
-                clean_target_id = target_device_id.strip()
-                if not clean_target_id:
-                    st.error("Please enter a device ID.")
-                else:
-                    payload = {}
-                    clean_admin_name = admin_device_name.strip()
-                    if clean_admin_name:
-                        payload["device_name"] = clean_admin_name
-                    if admin_trusted_choice == "Set true":
-                        payload["is_trusted"] = True
-                    elif admin_trusted_choice == "Set false":
-                        payload["is_trusted"] = False
-                    if admin_active_choice == "Set true":
-                        payload["is_active"] = True
-                    elif admin_active_choice == "Set false":
-                        payload["is_active"] = False
-
-                    if not payload:
-                        st.info("No changes selected.")
-                    else:
-                        resp = update_device(clean_target_id, headers, payload)
-                        if resp is not None and resp.status_code == 200:
-                            st.success("Device updated.")
-                            st.rerun()
-                        else:
-                            st.error(f"Failed to update device: {response_error(resp)}")
+                    st.caption("Use the controls in each device card to update trust/active state or revoke.")
 
 

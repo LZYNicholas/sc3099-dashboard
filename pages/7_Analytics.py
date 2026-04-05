@@ -6,6 +6,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import numpy as np
+import streamlit.components.v1 as components
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
@@ -15,6 +16,13 @@ from io import BytesIO
 from pathlib import Path
 import sys
 import importlib
+import math
+import os
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 
 # Ensure dashboard project root is importable when this page is analyzed directly.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,18 +36,18 @@ require_auth = auth_state.require_auth
 
 st.set_page_config(page_title="Analytics - SAIV Dashboard", layout="wide")
 
-PROMETHEUS_URL = "http://prometheus:9090" # Internal Docker hostname
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 
 
 def get_headers():
     return get_auth_headers()
 
 
-def prom_query(promql: str) -> list[dict]:
-    """Query Prometheus instant endpoint."""
+@st.cache_data(ttl=5, show_spinner=False)
+def _prom_query_cached(prometheus_url: str, promql: str) -> list[dict]:
     try:
         resp = requests.get(
-            f"{PROMETHEUS_URL}/api/v1/query",
+            f"{prometheus_url}/api/v1/query",
             params={"query": promql},
             timeout=5,
         )
@@ -50,11 +58,16 @@ def prom_query(promql: str) -> list[dict]:
     return []
 
 
-def prom_range_query(promql: str, start: str, end: str, step: str = "5m") -> list[dict]:
-    """Query Prometheus range endpoint."""
+def prom_query(promql: str) -> list[dict]:
+    """Query Prometheus instant endpoint."""
+    return _prom_query_cached(PROMETHEUS_URL, promql)
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _prom_range_query_cached(prometheus_url: str, promql: str, start: str, end: str, step: str) -> list[dict]:
     try:
         resp = requests.get(
-            f"{PROMETHEUS_URL}/api/v1/query_range",
+            f"{prometheus_url}/api/v1/query_range",
             params={"query": promql, "start": start, "end": end, "step": step},
             timeout=10,
         )
@@ -65,15 +78,65 @@ def prom_range_query(promql: str, start: str, end: str, step: str = "5m") -> lis
     return []
 
 
-def fetch_all_checkins(headers: dict) -> pd.DataFrame:
-    """Fetch all check-ins from the backend (paged)."""
+def prom_range_query(promql: str, start: str, end: str, step: str = "5m") -> list[dict]:
+    """Query Prometheus range endpoint."""
+    return _prom_range_query_cached(PROMETHEUS_URL, promql, start, end, step)
+
+
+def prom_scalar(promql: str) -> float | None:
+    """Return first scalar-like value for an instant query."""
+    result = prom_query(promql)
+    if not result:
+        return None
+    try:
+        return float(result[0]["value"][1])
+    except Exception:
+        return None
+
+
+def _inject_auto_refresh(seconds: int) -> None:
+    if seconds <= 0:
+        return
+    interval_ms = int(seconds * 1000)
+    if st_autorefresh is not None:
+        st_autorefresh(interval=interval_ms, key=f"analytics_autorefresh_{seconds}")
+        return
+
+    # Fallback for environments without streamlit-autorefresh.
+    components.html(
+        f"""
+        <script>
+          setTimeout(function () {{
+            window.parent.location.reload();
+          }}, {interval_ms});
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _fetch_all_checkins_cached(
+    api_base_url: str,
+    auth_header: str,
+    start_iso: str,
+    end_iso: str,
+) -> pd.DataFrame:
     rows = []
     limit = 200
     offset = 0
+    req_headers = {"Authorization": auth_header} if auth_header else {}
     while True:
+        params: dict[str, object] = {"limit": limit, "offset": offset}
+        if start_iso:
+            params["start_date"] = start_iso
+        if end_iso:
+            params["end_date"] = end_iso
         resp = requests.get(
-            f"{API_BASE_URL}/checkins/?limit={limit}&offset={offset}",
-            headers=headers,
+            f"{api_base_url}/checkins/",
+            params=params,
+            headers=req_headers,
             timeout=15,
         )
         if resp.status_code != 200:
@@ -92,12 +155,21 @@ def fetch_all_checkins(headers: dict) -> pd.DataFrame:
     return df
 
 
-def fetch_devices(headers: dict) -> pd.DataFrame:
-    """Fetch current user's devices."""
+def fetch_all_checkins(headers: dict, start_ts: datetime | None = None, end_ts: datetime | None = None) -> pd.DataFrame:
+    """Fetch check-ins from backend (paged), optionally filtered by time range."""
+    auth_header = str((headers or {}).get("Authorization", "")).strip()
+    start_iso = start_ts.strftime("%Y-%m-%dT%H:%M:%SZ") if start_ts else ""
+    # Avoid backend timezone edge-case on end_date comparisons; start_date is enough for dashboard windowing.
+    end_iso = ""
+    return _fetch_all_checkins_cached(API_BASE_URL, auth_header, start_iso, end_iso)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _fetch_devices_cached(api_base_url: str, auth_header: str) -> pd.DataFrame:
     try:
         resp = requests.get(
-            f"{API_BASE_URL}/devices/my-devices",
-            headers=headers,
+            f"{api_base_url}/devices/my-devices",
+            headers={"Authorization": auth_header} if auth_header else {},
             timeout=10,
         )
         if resp.status_code == 200:
@@ -107,6 +179,12 @@ def fetch_devices(headers: dict) -> pd.DataFrame:
     except Exception:
         pass
     return pd.DataFrame()
+
+
+def fetch_devices(headers: dict) -> pd.DataFrame:
+    """Fetch current user's devices."""
+    auth_header = str((headers or {}).get("Authorization", "")).strip()
+    return _fetch_devices_cached(API_BASE_URL, auth_header)
 
 
 def matplotlib_risk_histogram(df: pd.DataFrame) -> BytesIO:
@@ -197,6 +275,10 @@ def main():
     st.markdown("Deep-dive analytics powered by backend data and Prometheus metrics.")
 
     headers = get_headers()
+    auto_refresh_seconds = st.sidebar.selectbox("Auto Refresh", options=[0, 15, 30, 60], index=2)
+    if auto_refresh_seconds > 0:
+        _inject_auto_refresh(auto_refresh_seconds)
+        st.caption(f"Auto-refresh enabled every {auto_refresh_seconds}s")
 
     # ── Time range picker ─────────────────────────────────────────────────────
     days = st.sidebar.selectbox("Time Range", [7, 14, 30, 90], index=0, format_func=lambda x: f"Last {x} days")
@@ -205,17 +287,78 @@ def main():
 
     # ── Fetch check-in data ───────────────────────────────────────────────────
     with st.spinner("Loading check-in data…"):
-        df_all = fetch_all_checkins(headers)
+        df_all = fetch_all_checkins(headers, start_ts=start_ts, end_ts=end_ts)
 
     if df_all.empty:
         st.info("No check-in data available yet.")
         return
 
-    # Filter to selected time range
+    # Additional guard filter (backend already receives start/end date).
     if "checked_in_at" in df_all.columns:
         df = df_all[df_all["checked_in_at"] >= pd.Timestamp(start_ts, tz="UTC")].copy()
     else:
         df = df_all.copy()
+
+    st.subheader("Operational KPIs")
+
+    backend_health_ok = False
+    ml_health_ok = False
+    prometheus_ok = False
+
+    try:
+        backend_health = requests.get("http://localhost:8000/health", timeout=5)
+        backend_health_ok = backend_health.status_code == 200
+    except Exception:
+        backend_health_ok = False
+
+    try:
+        ml_health = requests.get("http://localhost:8001/health", timeout=5)
+        ml_health_ok = ml_health.status_code == 200
+    except Exception:
+        ml_health_ok = False
+
+    prom_up = prom_scalar('up{job="backend"}')
+    if prom_up is None:
+        prom_up = prom_scalar("up")
+    prometheus_ok = prom_up is not None
+
+    p95_latency = prom_scalar(
+        "histogram_quantile(0.95, sum(rate(saiv_http_request_duration_seconds_bucket[5m])) by (le))"
+    )
+    request_rate = prom_scalar("sum(rate(saiv_http_request_duration_seconds_count[5m]))")
+    success_rate = prom_scalar(
+        "sum(rate(saiv_http_request_duration_seconds_count{status=~'2..'}[5m])) / "
+        "sum(rate(saiv_http_request_duration_seconds_count[5m]))"
+    )
+
+    if "risk_score" in df.columns:
+        risk_series = pd.to_numeric(df["risk_score"], errors="coerce").dropna()
+        high_risk_alerts = int((risk_series >= 0.7).sum())
+    else:
+        high_risk_alerts = 0
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1:
+        st.metric("API p95 Latency", "N/A" if p95_latency is None else f"{p95_latency * 1000:.1f} ms")
+    with k2:
+        st.metric("Request Rate", "N/A" if request_rate is None else f"{request_rate:.2f} req/s")
+    with k3:
+        if success_rate is None or not math.isfinite(success_rate):
+            st.metric("Success Rate", "N/A")
+        else:
+            st.metric("Success Rate", f"{success_rate * 100:.1f}%")
+    with k4:
+        st.metric("High-Risk Alerts", high_risk_alerts)
+    with k5:
+        overall_health = "HEALTHY" if backend_health_ok and ml_health_ok and prometheus_ok else "DEGRADED"
+        st.metric("System Health", overall_health)
+
+    st.caption(
+        "Health checks: "
+        f"Backend={'up' if backend_health_ok else 'down'} | "
+        f"ML={'up' if ml_health_ok else 'down'} | "
+        f"Prometheus={'up' if prometheus_ok else 'down'}"
+    )
 
     # ── 1. Risk Score Distribution (Matplotlib) ───────────────────────────────
     st.subheader("Risk Score Distribution")

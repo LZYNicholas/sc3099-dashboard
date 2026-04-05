@@ -17,6 +17,10 @@ try:
     from st_keyup import st_keyup
 except Exception:
     st_keyup = None
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 
 # Page configuration
 st.set_page_config(page_title="Sessions - SAIV Dashboard", layout="wide")
@@ -26,6 +30,26 @@ FRONTEND_BASE_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/
 
 def get_headers():
     return get_auth_headers()
+
+
+def _inject_auto_refresh(seconds: int) -> None:
+    if seconds <= 0:
+        return
+    interval_ms = int(seconds * 1000)
+    if st_autorefresh is not None:
+        st_autorefresh(interval=interval_ms, key=f"sessions_autorefresh_{seconds}")
+        return
+    components.html(
+        f"""
+        <script>
+          setTimeout(function () {{
+            window.parent.location.reload();
+          }}, {interval_ms});
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
@@ -214,6 +238,10 @@ def main():
 
     st.title("Session Monitoring")
     st.markdown("Monitor active sessions and view check-in details.")
+    auto_refresh_seconds = st.sidebar.selectbox("Auto Refresh", [0, 15, 30, 60], index=2)
+    if auto_refresh_seconds > 0:
+        _inject_auto_refresh(auto_refresh_seconds)
+        st.caption(f"Auto-refresh enabled every {auto_refresh_seconds}s")
 
     # Fetch active courses for filter (only show active courses)
     try:
