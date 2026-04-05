@@ -270,6 +270,7 @@ def main_page():
     - **Audit Logs** - View audit trail
     - **Reports** - Export data
     - **Manage** - Create courses and sessions
+    - **Review Appeals** - Review flagged & appealed check-ins
 
     ### Quick Start
 
@@ -278,6 +279,7 @@ def main_page():
     3. Enroll students in the course
     4. Set the session to **Active** to allow check-ins
     5. Students can now check in via the frontend at http://localhost:3000
+    6. Review any **flagged or appealed** check-ins in the Review Appeals page
     """)
 
     # Quick stats
@@ -290,7 +292,7 @@ def main_page():
 
         if response.status_code == 200:
             stats = response.json()
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
 
             with col1:
                 st.metric("Total Sessions", stats.get('total_sessions', 0))
@@ -301,6 +303,9 @@ def main_page():
             with col4:
                 rate = stats.get('average_attendance_rate', 0) * 100
                 st.metric("Avg Attendance", f"{rate:.1f}%")
+            with col5:
+                flagged = stats.get('flagged_pending_review', 0)
+                st.metric("⚠️ Pending Review", flagged)
         else:
             st.info("Statistics will appear once you have courses and sessions.")
     except Exception as e:

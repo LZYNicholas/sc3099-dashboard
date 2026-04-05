@@ -730,7 +730,7 @@ with tab3:
         st.markdown("##### Enroll Single Student")
         
         # Load all students for selection
-        students_response = api_get("/users/", {"role": "student", "limit": 200})
+        students_response = api_get("/users/", {"role": "student", "limit": 100})
         available_students = []
         if students_response is not None and students_response.status_code == 200:
             for user in response_items(students_response):
