@@ -2,7 +2,6 @@
 """
 
 import streamlit as st
-import requests
 import streamlit.components.v1 as components
 import os
 import time
@@ -15,6 +14,7 @@ from lib.auth_state import (
     initialize_auth_state,
     save_auth_state,
 )
+from lib.response_utils import request_with_retry, response_error, parse_json
 
 _METRICS_STARTED = False
 
@@ -85,16 +85,23 @@ def login(email: str, password: str) -> bool:
     try:
         # Use the shared auth endpoint, then gate dashboard access by role.
         started = time.perf_counter()
-        response = requests.post(
+        response, error = request_with_retry(
+            "POST",
             f"{API_BASE_URL}/auth/login",
             json={"email": email, "password": password},
-            timeout=10
+            timeout=10,
+            retries=2,
         )
+        if response is None:
+            LOGIN_FAILURE.inc()
+            st.error(f"Connection error: {error or 'request failed'}")
+            return False
+
         API_LATENCY.labels(endpoint='/auth/login').observe(time.perf_counter() - started)
         API_REQUESTS.labels(endpoint='/auth/login', status=str(response.status_code)).inc()
 
         if response.status_code == 200:
-            data = response.json()
+            data = parse_json(response) or {}
             user = data.get('user', {})
 
             # Check role
@@ -116,11 +123,7 @@ def login(email: str, password: str) -> bool:
             return True
         else:
             LOGIN_FAILURE.inc()
-            try:
-                error = response.json().get('error', 'Login failed')
-            except:
-                error = 'Login failed'
-            st.error(f"Login failed: {error}")
+            st.error(f"Login failed: {response_error(response, 'Login failed')}")
             return False
     except Exception as e:
         LOGIN_FAILURE.inc()
@@ -217,7 +220,8 @@ def login_page():
                     else:
                         with st.spinner("Creating account..."):
                             try:
-                                res = requests.post(
+                                res, error = request_with_retry(
+                                    "POST",
                                     f"{API_BASE_URL}/auth/register",
                                     json={
                                         "email": new_email,
@@ -225,17 +229,17 @@ def login_page():
                                         "full_name": new_name,
                                         "role": new_role
                                     },
-                                    timeout=10
+                                    timeout=10,
+                                    retries=2,
                                 )
+                                if res is None:
+                                    st.error(f"Connection error: {error or 'request failed'}")
+                                    return
+
                                 if res.status_code == 201:
                                     st.success(f"Account for {new_email} created successfully! You can now login.")
                                 else:
-                                    try:
-                                        err_json = res.json()
-                                        err_msg = err_json.get('message', err_json.get('error', res.text))
-                                    except:
-                                        err_msg = res.text
-                                    st.error(f"Registration failed: {err_msg}")
+                                    st.error(f"Registration failed: {response_error(res)}")
                             except Exception as e:
                                 st.error(f"Connection error: {e}")
 
@@ -288,10 +292,19 @@ def main_page():
 
     try:
         headers = get_auth_headers()
-        response = requests.get(f"{API_BASE_URL}/stats/overview", headers=headers, timeout=10)
+        response, error = request_with_retry(
+            "GET",
+            f"{API_BASE_URL}/stats/overview",
+            headers=headers,
+            timeout=10,
+            retries=2,
+        )
+        if response is None:
+            st.warning(f"Could not load statistics: {error or 'request failed'}")
+            return
 
         if response.status_code == 200:
-            stats = response.json()
+            stats = parse_json(response) or {}
             col1, col2, col3, col4, col5 = st.columns(5)
 
             with col1:

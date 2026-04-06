@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import bool_query, extract_items, fetch_all_items
+from lib.response_utils import bool_query, extract_items, fetch_all_items, request_with_retry, response_error, parse_json
 
 try:
     from st_keyup import st_keyup
@@ -51,23 +51,6 @@ def _inject_auto_refresh(seconds: int) -> None:
         width=0,
     )
 
-
-def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
-    if response is None:
-        return "Connection error"
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-
-    if isinstance(payload, dict):
-        return (
-            str(payload.get("detail"))
-            or str(payload.get("message"))
-            or str(payload.get("error"))
-            or fallback
-        )
-    return fallback
 
 def get_status_color(status):
     """Get color for status badge"""
@@ -121,13 +104,17 @@ def is_checkin_window_open(session):
 
 def fetch_session_qr(session_id):
     try:
-        response = requests.get(
+        response, error = request_with_retry(
+            "GET",
             f"{API_BASE_URL}/sessions/{session_id}/qr",
             headers=get_headers(),
-            timeout=10
+            timeout=10,
+            retries=2,
         )
+        if response is None:
+            return False, (error or "Failed to fetch QR code")
         if response.status_code == 200:
-            payload = response.json()
+            payload = parse_json(response)
             if not isinstance(payload, dict):
                 return False, 'Failed to fetch QR code'
 
@@ -214,12 +201,16 @@ def can_manage_session(role: str) -> bool:
 
 def update_session_status(session_id, status):
     try:
-        response = requests.patch(
+        response, error = request_with_retry(
+            "PATCH",
             f"{API_BASE_URL}/sessions/{session_id}",
             json={"status": status},
             headers={**get_headers(), "Content-Type": "application/json"},
-            timeout=10
+            timeout=10,
+            retries=2,
         )
+        if response is None:
+            return False, (error or "Failed to update session status")
         if response.status_code == 200:
             return True, None
         try:
@@ -287,10 +278,20 @@ def main():
         if course_filter != 'All':
             params['course_id'] = course_filter
 
-        response = requests.get(url, params=params, headers=get_headers(), timeout=10)
+        response, error = request_with_retry(
+            "GET",
+            url,
+            params=params,
+            headers=get_headers(),
+            timeout=10,
+            retries=2,
+        )
+        if response is None:
+            st.error(f"Failed to load sessions: {error or 'request failed'}")
+            return
 
         if response.status_code == 200:
-            sessions_data = response.json()
+            sessions_data = parse_json(response)
             sessions = sessions_data.get('items', []) if isinstance(sessions_data, dict) else sessions_data
 
             # Apply status filter
@@ -567,14 +568,19 @@ def main():
 def show_session_checkins(session_id):
     """Display check-ins for a session"""
     try:
-        response = requests.get(
+        response, error = request_with_retry(
+            "GET",
             f"{API_BASE_URL}/checkins/session/{session_id}",
             headers=get_headers(),
-            timeout=10
+            timeout=10,
+            retries=2,
         )
+        if response is None:
+            st.warning(f"Could not load check-ins: {error or 'request failed'}")
+            return
 
         if response.status_code == 200:
-            checkins = response.json()
+            checkins = parse_json(response)
             if isinstance(checkins, dict):
                 checkins = checkins.get('items', checkins.get('records', []))
             if checkins:
@@ -631,13 +637,18 @@ def show_session_checkins(session_id):
                     )
                     selected_checkin_id = checkin_options[selected_checkin_label]
                     if st.button("Load Check-in Detail", key=f"load_checkin_detail_{session_id}"):
-                        detail_response = requests.get(
+                        detail_response, detail_error = request_with_retry(
+                            "GET",
                             f"{API_BASE_URL}/checkins/{selected_checkin_id}",
                             headers=get_headers(),
-                            timeout=10
+                            timeout=10,
+                            retries=2,
                         )
+                        if detail_response is None:
+                            st.warning(f"Could not load check-in detail: {detail_error or 'request failed'}")
+                            return
                         if detail_response.status_code == 200:
-                            detail = detail_response.json()
+                            detail = parse_json(detail_response)
                             st.json(detail)
                             # ...existing code...
                         else:
@@ -658,13 +669,15 @@ def show_session_details(session_id, sessions, active_course_ids=None):
         return
 
     try:
-        session_detail_response = requests.get(
+        session_detail_response, _error = request_with_retry(
+            "GET",
             f"{API_BASE_URL}/sessions/{session_id}",
             headers=get_headers(),
             timeout=10,
+            retries=2,
         )
-        if session_detail_response.status_code == 200:
-            session_detail = session_detail_response.json()
+        if session_detail_response is not None and session_detail_response.status_code == 200:
+            session_detail = parse_json(session_detail_response)
             if isinstance(session_detail, dict):
                 session = {**session, **session_detail}
     except Exception:
@@ -700,14 +713,19 @@ def show_session_details(session_id, sessions, active_course_ids=None):
 
     # Fetch session statistics
     try:
-        stats_response = requests.get(
+        stats_response, stats_error = request_with_retry(
+            "GET",
             f"{API_BASE_URL}/stats/sessions/{session_id}",
             headers=get_headers(),
-            timeout=10
+            timeout=10,
+            retries=2,
         )
+        if stats_response is None:
+            st.warning(f"Could not load session statistics: {stats_error or 'request failed'}")
+            return
 
         if stats_response.status_code == 200:
-            stats = stats_response.json()
+            stats = parse_json(stats_response) or {}
 
             st.markdown("---")
             st.markdown("#### Statistics")

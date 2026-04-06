@@ -1,5 +1,6 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 import requests
+import time
 
 
 def extract_items(payload: Any) -> List[Dict[str, Any]]:
@@ -13,6 +14,72 @@ def extract_items(payload: Any) -> List[Dict[str, Any]]:
 
 def bool_query(value: bool) -> str:
     return 'true' if value else 'false'
+
+
+def parse_json(response: requests.Response | None) -> Any:
+    if response is None:
+        return None
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
+    if response is None:
+        return "Connection error"
+
+    payload = parse_json(response)
+    if isinstance(payload, dict):
+        detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        if detail:
+            return str(detail)
+
+    text = (response.text or "").strip()
+    if text:
+        return text[:250]
+    return fallback
+
+
+def request_with_retry(
+    method: str,
+    url: str,
+    *,
+    headers: Dict[str, str] | None = None,
+    params: Dict[str, Any] | None = None,
+    json: Dict[str, Any] | List[Any] | None = None,
+    data: Any = None,
+    timeout: int = 10,
+    retries: int = 2,
+    backoff_base: float = 0.35,
+    retry_for: tuple[int, ...] = (408, 425, 429, 500, 502, 503, 504),
+) -> Tuple[requests.Response | None, Optional[str]]:
+    """Send an HTTP request with bounded retries for transient failures."""
+    last_error: Optional[str] = None
+
+    for attempt in range(retries + 1):
+        try:
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json,
+                data=data,
+                timeout=timeout,
+            )
+            if response.status_code in retry_for and attempt < retries:
+                time.sleep(backoff_base * (2 ** attempt))
+                continue
+            return response, None
+        except requests.RequestException as error:
+            last_error = str(error)
+            if attempt < retries:
+                time.sleep(backoff_base * (2 ** attempt))
+                continue
+            return None, last_error
+
+    return None, last_error or "Request failed"
 
 
 def fetch_all_items(
@@ -37,11 +104,17 @@ def fetch_all_items(
         page_params['limit'] = page_size
         page_params['offset'] = offset
 
-        response = requests.get(url, params=page_params, headers=headers, timeout=timeout)
-        if response.status_code != 200:
+        response, error = request_with_retry(
+            "GET",
+            url,
+            params=page_params,
+            headers=headers,
+            timeout=timeout,
+        )
+        if response is None or error is not None or response.status_code != 200:
             break
 
-        payload = response.json()
+        payload = parse_json(response)
         page_items = extract_items(payload)
         if not page_items:
             break

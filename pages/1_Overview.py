@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
+from lib.response_utils import request_with_retry, response_error, parse_json
 try:
     from streamlit_autorefresh import st_autorefresh
 except Exception:
@@ -21,19 +22,6 @@ st.set_page_config(page_title="Overview - SAIV Dashboard", layout="wide")
 def get_headers():
     return get_auth_headers()
 
-
-def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
-    if response is None:
-        return "Connection error"
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-    if isinstance(payload, dict):
-        detail = payload.get('detail') or payload.get('message') or payload.get('error')
-        if detail:
-            return str(detail)
-    return fallback
 
 AUTO_REFRESH_SECONDS = 30
 
@@ -64,12 +52,17 @@ def _submit_review(checkin_id: str, decision: str, note: str = ""):
         payload = {"status": decision}
         if note:
             payload["review_notes"] = note
-        resp = requests.post(
+        resp, error = request_with_retry(
+            "POST",
             f"{API_BASE_URL}/checkins/{checkin_id}/review",
             json=payload,
             headers=get_headers(),
             timeout=10,
+            retries=2,
         )
+        if resp is None:
+            st.error(f"Review failed: {error or 'request failed'}")
+            return
         if resp.status_code in (200, 201):
             st.success(f"Check-in {decision} successfully.")
             st.rerun()
@@ -108,14 +101,20 @@ def main():
 
     # Fetch overview statistics
     try:
-        response = requests.get(
+        response, error = request_with_retry(
+            "GET",
             f"{API_BASE_URL}/stats/overview?days={days}",
             headers=get_headers(),
-            timeout=10
+            timeout=10,
+            retries=2,
         )
+        if response is None:
+            st.error(f"Connection error: {error or 'request failed'}")
+            st.info("Make sure the backend server is running.")
+            return
 
         if response.status_code == 200:
-            stats = response.json()
+            stats = parse_json(response) or {}
 
             # Key Metrics Row
             st.subheader("Key Metrics")
@@ -236,13 +235,18 @@ def main():
             # Flagged Check-ins
             st.subheader("Flagged Check-ins Requiring Review")
             try:
-                flagged_response = requests.get(
+                flagged_response, flagged_error = request_with_retry(
+                    "GET",
                     f"{API_BASE_URL}/checkins/flagged?limit=10",
                     headers=get_headers(),
-                    timeout=10
+                    timeout=10,
+                    retries=2,
                 )
+                if flagged_response is None:
+                    st.warning(f"Could not load flagged check-ins: {flagged_error or 'request failed'}")
+                    return
                 if flagged_response.status_code == 200:
-                    flagged_data = flagged_response.json()
+                    flagged_data = parse_json(flagged_response)
                     flagged_items = flagged_data.get('items', flagged_data) if isinstance(flagged_data, dict) else flagged_data
                     if flagged_items:
                         for item in flagged_items:

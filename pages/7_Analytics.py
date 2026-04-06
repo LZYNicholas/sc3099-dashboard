@@ -18,6 +18,7 @@ import sys
 import importlib
 import math
 import os
+from lib.response_utils import request_with_retry, parse_json
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -46,13 +47,16 @@ def get_headers():
 @st.cache_data(ttl=5, show_spinner=False)
 def _prom_query_cached(prometheus_url: str, promql: str) -> list[dict]:
     try:
-        resp = requests.get(
+        resp, _error = request_with_retry(
+            "GET",
             f"{prometheus_url}/api/v1/query",
             params={"query": promql},
             timeout=5,
+            retries=1,
         )
-        if resp.status_code == 200:
-            return resp.json().get("data", {}).get("result", [])
+        if resp is not None and resp.status_code == 200:
+            payload = parse_json(resp) or {}
+            return payload.get("data", {}).get("result", [])
     except Exception:
         pass
     return []
@@ -66,13 +70,16 @@ def prom_query(promql: str) -> list[dict]:
 @st.cache_data(ttl=10, show_spinner=False)
 def _prom_range_query_cached(prometheus_url: str, promql: str, start: str, end: str, step: str) -> list[dict]:
     try:
-        resp = requests.get(
+        resp, _error = request_with_retry(
+            "GET",
             f"{prometheus_url}/api/v1/query_range",
             params={"query": promql, "start": start, "end": end, "step": step},
             timeout=10,
+            retries=1,
         )
-        if resp.status_code == 200:
-            return resp.json().get("data", {}).get("result", [])
+        if resp is not None and resp.status_code == 200:
+            payload = parse_json(resp) or {}
+            return payload.get("data", {}).get("result", [])
     except Exception:
         pass
     return []
@@ -89,9 +96,47 @@ def prom_scalar(promql: str) -> float | None:
     if not result:
         return None
     try:
-        return float(result[0]["value"][1])
+        value = float(result[0]["value"][1])
+        return value if math.isfinite(value) else None
     except Exception:
         return None
+
+
+def _safe_float(value) -> float | None:
+    try:
+        v = float(value)
+        return v if math.isfinite(v) else None
+    except Exception:
+        return None
+
+
+def _format_metric(value: float | None, fmt: str, suffix: str = "") -> str:
+    if value is None:
+        return "N/A"
+    try:
+        return f"{value:{fmt}}{suffix}"
+    except Exception:
+        return "N/A"
+
+
+def _prom_timeseries_to_df(series_list: list[dict], value_key: str) -> pd.DataFrame:
+    rows: list[dict] = []
+    for series in series_list or []:
+        for point in series.get("values", []):
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            ts = _safe_float(point[0])
+            val = _safe_float(point[1])
+            if ts is None or val is None:
+                continue
+            rows.append({"time": datetime.utcfromtimestamp(ts), value_key: val})
+
+    if not rows:
+        return pd.DataFrame(columns=["time", value_key])
+
+    out = pd.DataFrame(rows).dropna(subset=["time", value_key])
+    out = out.sort_values("time").drop_duplicates(subset=["time"], keep="last")
+    return out
 
 
 def _inject_auto_refresh(seconds: int) -> None:
@@ -141,7 +186,7 @@ def _fetch_all_checkins_cached(
         )
         if resp.status_code != 200:
             break
-        data = resp.json()
+        data = parse_json(resp) or {}
         items = data.get("items", [])
         rows.extend(items)
         if len(items) < limit:
@@ -151,7 +196,8 @@ def _fetch_all_checkins_cached(
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     if "checked_in_at" in df.columns:
-        df["checked_in_at"] = pd.to_datetime(df["checked_in_at"], utc=True)
+        df["checked_in_at"] = pd.to_datetime(df["checked_in_at"], utc=True, errors="coerce")
+        df = df.dropna(subset=["checked_in_at"]).sort_values("checked_in_at")
     return df
 
 
@@ -290,11 +336,9 @@ def main():
         df_all = fetch_all_checkins(headers, start_ts=start_ts, end_ts=end_ts)
 
     if df_all.empty:
-        st.info("No check-in data available yet.")
-        return
-
-    # Additional guard filter (backend already receives start/end date).
-    if "checked_in_at" in df_all.columns:
+        df = pd.DataFrame()
+    elif "checked_in_at" in df_all.columns:
+        # Additional guard filter (backend already receives start/end date).
         df = df_all[df_all["checked_in_at"] >= pd.Timestamp(start_ts, tz="UTC")].copy()
     else:
         df = df_all.copy()
@@ -332,21 +376,18 @@ def main():
     )
 
     if "risk_score" in df.columns:
-        risk_series = pd.to_numeric(df["risk_score"], errors="coerce").dropna()
+        risk_series = pd.to_numeric(df["risk_score"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
         high_risk_alerts = int((risk_series >= 0.7).sum())
     else:
         high_risk_alerts = 0
 
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.metric("API p95 Latency", "N/A" if p95_latency is None else f"{p95_latency * 1000:.1f} ms")
+        st.metric("API p95 Latency", _format_metric(None if p95_latency is None else p95_latency * 1000, ".1f", " ms"))
     with k2:
-        st.metric("Request Rate", "N/A" if request_rate is None else f"{request_rate:.2f} req/s")
+        st.metric("Request Rate", _format_metric(request_rate, ".2f", " req/s"))
     with k3:
-        if success_rate is None or not math.isfinite(success_rate):
-            st.metric("Success Rate", "N/A")
-        else:
-            st.metric("Success Rate", f"{success_rate * 100:.1f}%")
+        st.metric("Success Rate", _format_metric(None if success_rate is None else success_rate * 100, ".1f", "%"))
     with k4:
         st.metric("High-Risk Alerts", high_risk_alerts)
     with k5:
@@ -360,6 +401,9 @@ def main():
         f"Prometheus={'up' if prometheus_ok else 'down'}"
     )
 
+    if df.empty:
+        st.info("No check-in data available for the selected time range. Showing service and Prometheus health only.")
+
     # ── 1. Risk Score Distribution (Matplotlib) ───────────────────────────────
     st.subheader("Risk Score Distribution")
     col_hist, col_pie = st.columns([3, 2])
@@ -372,8 +416,8 @@ def main():
             st.info("No risk score data.")
 
     with col_pie:
-        if "risk_score" in df.columns:
-            scores = df["risk_score"].dropna().astype(float)
+        if "risk_score" in df.columns and not df["risk_score"].dropna().empty:
+            scores = pd.to_numeric(df["risk_score"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
             low = (scores < 0.3).sum()
             med = ((scores >= 0.3) & (scores < 0.5)).sum()
             high = ((scores >= 0.5) & (scores < 0.7)).sum()
@@ -418,9 +462,10 @@ def main():
 
     # ── 3. Daily Check-in Trend ───────────────────────────────────────────────
     st.subheader("Daily Check-in Trend")
-    if "checked_in_at" in df.columns:
+    if "checked_in_at" in df.columns and not df.empty:
         df_daily = df.groupby(df["checked_in_at"].dt.date).size().reset_index()
         df_daily.columns = ["Date", "Check-ins"]
+        df_daily = df_daily.sort_values("Date")
         fig = px.area(
             df_daily, x="Date", y="Check-ins",
             line_shape="spline", color_discrete_sequence=["#6366f1"],
@@ -444,35 +489,41 @@ def main():
     # ── 5. Distance from Venue Distribution ──────────────────────────────────
     st.subheader("Check-in Distance from Venue")
     if "distance_from_venue_meters" in df.columns:
-        dist = df["distance_from_venue_meters"].dropna().astype(float)
-        fig = px.histogram(
-            df, x="distance_from_venue_meters", nbins=30,
-            labels={"distance_from_venue_meters": "Distance (m)"},
-            color_discrete_sequence=["#22d3ee"],
-        )
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            xaxis=dict(tickfont=dict(color="#94a3b8"), gridcolor="#334155"),
-            yaxis=dict(tickfont=dict(color="#94a3b8"), gridcolor="#334155"),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        dist = pd.to_numeric(df["distance_from_venue_meters"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if dist.empty:
+            st.info("No distance data available.")
+        else:
+            fig = px.histogram(
+                dist.to_frame(name="distance_from_venue_meters"), x="distance_from_venue_meters", nbins=30,
+                labels={"distance_from_venue_meters": "Distance (m)"},
+                color_discrete_sequence=["#22d3ee"],
+            )
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(tickfont=dict(color="#94a3b8"), gridcolor="#334155"),
+                yaxis=dict(tickfont=dict(color="#94a3b8"), gridcolor="#334155"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Median distance", f"{dist.median():.1f} m")
-        c2.metric("90th percentile", f"{dist.quantile(0.9):.1f} m")
-        c3.metric("Max recorded", f"{dist.max():.1f} m")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Median distance", _format_metric(_safe_float(dist.median()), ".1f", " m"))
+            c2.metric("90th percentile", _format_metric(_safe_float(dist.quantile(0.9)), ".1f", " m"))
+            c3.metric("Max recorded", _format_metric(_safe_float(dist.max()), ".1f", " m"))
 
     # ── 6. Liveness Pass Rate ────────────────────────────────────────────────
     st.subheader("️ Liveness & Risk Signals")
     if "liveness_passed" in df.columns:
         total = len(df)
-        passed = df["liveness_passed"].sum()
+        passed = pd.to_numeric(df["liveness_passed"], errors="coerce").fillna(0).sum()
         rate = (passed / total * 100) if total > 0 else 0
         c1, c2, c3 = st.columns(3)
         c1.metric("Liveness Pass Rate", f"{rate:.1f}%")
         if "risk_score" in df.columns:
-            c2.metric("Avg Risk Score", f"{df['risk_score'].mean():.3f}")
-            c3.metric("High-risk Check-ins", int((df["risk_score"] >= 0.5).sum()))
+            risk_vals = pd.to_numeric(df["risk_score"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            avg_risk = _safe_float(risk_vals.mean()) if not risk_vals.empty else None
+            high_risk = int((risk_vals >= 0.5).sum()) if not risk_vals.empty else 0
+            c2.metric("Avg Risk Score", _format_metric(avg_risk, ".3f"))
+            c3.metric("High-risk Check-ins", high_risk)
 
     # ── 7. Device Analytics ──────────────────────────────────────────────────
     st.subheader("Device Trust Distribution")
@@ -535,12 +586,17 @@ def main():
     if checkin_results:
         prom_available = True
         st.markdown("**Check-in totals (from Prometheus)**")
-        rows = [
-            {"Status": r["metric"].get("status", "unknown"), "Total": float(r["value"][1])}
-            for r in checkin_results
-        ]
+        rows = []
+        for r in checkin_results:
+            total = _safe_float((r.get("value") or [None, None])[1])
+            if total is None:
+                continue
+            rows.append({"Status": (r.get("metric") or {}).get("status", "unknown"), "Total": total})
         df_prom = pd.DataFrame(rows)
-        st.dataframe(df_prom, use_container_width=True, hide_index=True)
+        if not df_prom.empty:
+            st.dataframe(df_prom, use_container_width=True, hide_index=True)
+        else:
+            st.info("Prometheus returned no numeric check-in totals.")
 
     start_iso = start_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_iso = end_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -552,13 +608,8 @@ def main():
     )
     if risk_range:
         prom_available = True
-        ts_rows = [
-            {"time": datetime.utcfromtimestamp(float(v[0])), "avg_risk": float(v[1])}
-            for series in risk_range for v in series["values"]
-            if v[1] not in ("NaN", "Inf", "-Inf")
-        ]
-        if ts_rows:
-            df_risk_ts = pd.DataFrame(ts_rows)
+        df_risk_ts = _prom_timeseries_to_df(risk_range, "avg_risk")
+        if not df_risk_ts.empty:
             fig = px.line(
                 df_risk_ts, x="time", y="avg_risk",
                 labels={"time": "Time", "avg_risk": "Average Risk Score"},
