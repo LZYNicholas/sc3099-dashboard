@@ -132,7 +132,19 @@ def login(email: str, password: str) -> bool:
 
 
 def logout():
-    """Clear session"""
+    """Call backend logout and clear local session."""
+    try:
+        headers = get_auth_headers()
+        request_with_retry(
+            "POST",
+            f"{API_BASE_URL}/auth/logout",
+            headers=headers,
+            timeout=8,
+            retries=1,
+        )
+    except Exception:
+        pass
+
     clear_auth_state()
 
 

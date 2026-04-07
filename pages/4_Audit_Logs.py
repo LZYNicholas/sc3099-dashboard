@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 
 # Page configuration
-st.set_page_config(page_title="Audit Logs - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="Audit Logs - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 
 def get_headers():
@@ -295,3 +295,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

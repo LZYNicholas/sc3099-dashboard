@@ -26,6 +26,20 @@ _AUTH_STORE: Dict[str, Dict[str, Any]] = {}
 AUTH_VALIDATE_CACHE_SECONDS = 60
 
 
+def _apply_sidebar_lock() -> None:
+    st.markdown(
+        """
+        <style>
+          [data-testid="collapsedControl"] {
+            display: none !important;
+            visibility: hidden !important;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _ensure_defaults() -> None:
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
@@ -194,6 +208,7 @@ def _restore_from_store() -> None:
 
 
 def initialize_auth_state() -> None:
+    _apply_sidebar_lock()
     _ensure_defaults()
 
     if "token" in st.query_params:

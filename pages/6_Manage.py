@@ -10,7 +10,7 @@ from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import bool_query, extract_items
 
 # Page configuration
-st.set_page_config(page_title="Manage - SAIV", layout="wide")
+st.set_page_config(page_title="Manage - SAIV", layout="wide", initial_sidebar_state="expanded")
 
 require_auth()
 
@@ -221,6 +221,32 @@ def fetch_active_instructors() -> tuple[list[dict], str | None]:
     instructors.sort(key=lambda item: item["label"].lower())
     return instructors, None
 
+
+def _safe_float(value, default: float) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _parse_api_datetime(value, fallback: datetime) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        raw = value.strip()
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return fallback
+    else:
+        return fallback
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=SG_TZ)
+    return parsed.astimezone(SG_TZ)
+
 st.title("Course & Session Management")
 st.markdown("Create and manage courses and sessions for student attendance.")
 
@@ -232,7 +258,7 @@ if current_role not in {"instructor", "admin"}:
 st.markdown("---")
 
 # Tabs for different management functions
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Create Course", "Create Session", "Manage Enrollments", "Session Status", "Recovery", "Manage Devices"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Create Course", "Create Session", "Manage Enrollments", "Manage Sessions", "Recovery", "Manage Devices"])
 
 # ============================================================================
 # TAB 1: CREATE COURSE
@@ -365,6 +391,11 @@ with tab1:
 
     courses = fetch_all_courses(is_active=True)
     if courses:
+        edit_instructors: list[dict] = []
+        edit_instructor_error: str | None = None
+        if current_role == "admin":
+            edit_instructors, edit_instructor_error = fetch_active_instructors()
+
         sessions_by_course: dict[str, list[dict]] = {}
         sessions_response = api_get("/sessions/", {"limit": 500})
         if sessions_response is not None and sessions_response.status_code == 200:
@@ -383,6 +414,115 @@ with tab1:
                     st.write(f"**Geofence:** {course.get('geofence_radius_meters', 100)}m")
                     st.write(f"**Risk Threshold:** {course.get('risk_threshold', 0.5)}")
                     st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
+
+                st.markdown("##### Edit Course")
+                with st.form(f"edit_course_form_{course.get('id')}"):
+                    edit_col1, edit_col2 = st.columns(2)
+
+                    with edit_col1:
+                        updated_name = st.text_input(
+                            "Course Name",
+                            value=str(course.get("name") or ""),
+                            key=f"course_name_{course.get('id')}"
+                        )
+                        updated_semester = st.text_input(
+                            "Semester",
+                            value=str(course.get("semester") or ""),
+                            key=f"course_semester_{course.get('id')}"
+                        )
+                        updated_venue_name = st.text_input(
+                            "Venue",
+                            value=str(course.get("venue_name") or ""),
+                            key=f"course_venue_{course.get('id')}"
+                        )
+                        updated_description = st.text_area(
+                            "Description",
+                            value=str(course.get("description") or ""),
+                            key=f"course_desc_{course.get('id')}"
+                        )
+
+                    with edit_col2:
+                        updated_lat = st.number_input(
+                            "Venue Latitude",
+                            value=_safe_float(course.get("venue_latitude"), 1.2950),
+                            format="%.6f",
+                            key=f"course_lat_{course.get('id')}"
+                        )
+                        updated_lon = st.number_input(
+                            "Venue Longitude",
+                            value=_safe_float(course.get("venue_longitude"), 103.7737),
+                            format="%.6f",
+                            key=f"course_lon_{course.get('id')}"
+                        )
+                        updated_geofence = st.number_input(
+                            "Geofence Radius (meters)",
+                            value=int(_safe_float(course.get("geofence_radius_meters"), 100)),
+                            min_value=10,
+                            max_value=1000,
+                            key=f"course_geofence_{course.get('id')}"
+                        )
+                        updated_risk_threshold = st.slider(
+                            "Risk Threshold",
+                            min_value=0.0,
+                            max_value=1.0,
+                            step=0.1,
+                            value=max(0.0, min(1.0, _safe_float(course.get("risk_threshold"), 0.5))),
+                            key=f"course_risk_{course.get('id')}"
+                        )
+
+                    updated_instructor_id = None
+                    if current_role == "admin":
+                        if edit_instructor_error:
+                            st.warning(f"Instructors unavailable: {edit_instructor_error}")
+                        elif edit_instructors:
+                            current_instructor_id = str(course.get("instructor_id") or "").strip()
+                            default_index = 0
+                            for idx, inst in enumerate(edit_instructors):
+                                if inst.get("id") == current_instructor_id:
+                                    default_index = idx
+                                    break
+
+                            selected_instructor = st.selectbox(
+                                "Assigned Instructor",
+                                options=edit_instructors,
+                                format_func=lambda option: option["label"],
+                                index=default_index,
+                                key=f"course_instructor_{course.get('id')}"
+                            )
+                            updated_instructor_id = selected_instructor.get("id")
+
+                    submit_edit_course = st.form_submit_button(
+                        "Save Course Changes",
+                        type="primary",
+                        use_container_width=True
+                    )
+
+                    if submit_edit_course:
+                        if not updated_name.strip() or not updated_semester.strip():
+                            st.error("Course name and semester are required.")
+                        else:
+                            update_payload = {
+                                "name": updated_name.strip(),
+                                "semester": updated_semester.strip(),
+                                "description": updated_description.strip() or None,
+                                "venue_name": updated_venue_name.strip() or None,
+                                "venue_latitude": updated_lat,
+                                "venue_longitude": updated_lon,
+                                "geofence_radius_meters": updated_geofence,
+                                "risk_threshold": updated_risk_threshold,
+                            }
+
+                            if current_role == "admin" and updated_instructor_id:
+                                update_payload["instructor_id"] = updated_instructor_id
+
+                            response = api_put(f"/courses/{course.get('id')}", update_payload)
+                            if response is not None and response.status_code == 200:
+                                st.success("Course updated successfully.")
+                                st.rerun()
+                            elif response is not None:
+                                st.error(f"Failed to update course: {response_error(response)}")
+                            else:
+                                st.error("Failed to connect to server while updating course.")
 
                 # Delete button - only for active courses
                 if course.get('is_active'):
@@ -658,49 +798,8 @@ with tab2:
                         else:
                             st.error("Failed to connect to server")
 
-    # List existing sessions
     st.markdown("---")
-    st.subheader("Existing Sessions")
-
-    if st.button("Refresh Sessions"):
-        st.rerun()
-
-    # Get all sessions and active courses to check status
-    response = api_get("/sessions/", {"limit": 50})
-    active_course_ids_list = {c['id'] for c in fetch_all_courses(is_active=True)}
-
-    if response is not None and response.status_code == 200:
-        sessions = response_items(response)
-        if sessions:
-            for session in sessions:
-                status_emoji = {
-                    'scheduled': 'Scheduled',
-                    'active': 'Active',
-                    'closed': 'Closed',
-                    'cancelled': 'Cancelled'
-                }.get(session.get('status'), 'Unknown')
-
-                # Check if course is deleted
-                course_deleted = session.get('course_id') not in active_course_ids_list
-                deleted_indicator = " [COURSE DELETED]" if course_deleted else ""
-
-                with st.expander(f"{status_emoji} {session.get('course_code', 'N/A')} - {session.get('name')} ({session.get('status')}){deleted_indicator}"):
-                    if course_deleted:
-                        st.error("The course for this session has been deleted. This session cannot be activated.")
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**ID:** `{session.get('id')}`")
-                        st.write(f"**Type:** {session.get('session_type', 'N/A')}")
-                        st.write(f"**Venue:** {session.get('venue_name', 'Not set')}")
-                    with col2:
-                        st.write(f"**Start:** {session.get('scheduled_start', 'N/A')[:16] if session.get('scheduled_start') else 'N/A'}")
-                        st.write(f"**End:** {session.get('scheduled_end', 'N/A')[:16] if session.get('scheduled_end') else 'N/A'}")
-                        st.write(f"**Check-in:** {session.get('checkin_opens_at', 'N/A')[:16] if session.get('checkin_opens_at') else 'N/A'} - {session.get('checkin_closes_at', 'N/A')[:16] if session.get('checkin_closes_at') else 'N/A'}")
-        else:
-            st.info("No sessions found. Create one above!")
-    else:
-        st.warning(f"Could not load sessions: {response_error(response)}")
+    st.info("Session editing, lifecycle status changes, and deletion are centralized in the `Manage Sessions` tab to avoid duplicate controls.")
 
 
 # ============================================================================
@@ -876,8 +975,8 @@ with tab3:
 # TAB 4: SESSION STATUS
 # ============================================================================
 with tab4:
-    st.subheader("Change Session Status")
-    st.markdown("Activate, close, or cancel sessions.")
+    st.subheader("Manage Sessions")
+    st.markdown("Edit session details, manage lifecycle status, and delete eligible sessions.")
 
     # Get sessions
     response = api_get("/sessions/", {"limit": 100})
@@ -944,10 +1043,161 @@ with tab4:
             st.write(status_colors.get(status, f'Unknown: {status}'))
 
         with col2:
-            st.markdown("**Session Details:**")
-            st.write(f"ID: `{selected_session.get('id')}`")
+            st.markdown("**Session Summary:**")
+            st.write(f"Course: `{selected_session.get('course_code', 'N/A')}`")
+            st.write(f"Session ID: `{selected_session.get('id')}`")
             if not course_is_active:
                 st.error("Course has been deleted!")
+
+        st.markdown("---")
+        st.markdown("##### Edit Session")
+        st.caption("You can edit session details except course and session type.")
+
+        now_sg = datetime.now(SG_TZ).replace(second=0, microsecond=0)
+        default_start_dt = _parse_api_datetime(selected_session.get("scheduled_start"), now_sg)
+        default_end_dt = _parse_api_datetime(selected_session.get("scheduled_end"), default_start_dt + timedelta(hours=2))
+        default_checkin_open_dt = _parse_api_datetime(
+            selected_session.get("checkin_opens_at"),
+            default_start_dt - timedelta(minutes=15)
+        )
+        default_checkin_close_dt = _parse_api_datetime(
+            selected_session.get("checkin_closes_at"),
+            default_start_dt + timedelta(minutes=30)
+        )
+
+        with st.form(f"edit_session_form_{selected_session.get('id')}"):
+            edit_col1, edit_col2 = st.columns(2)
+
+            with edit_col1:
+                updated_session_name = st.text_input(
+                    "Session Name *",
+                    value=str(selected_session.get("name") or "")
+                )
+                updated_description = st.text_area(
+                    "Description",
+                    value=str(selected_session.get("description") or "")
+                )
+                st.text_input(
+                    "Session Type",
+                    value=str(selected_session.get("session_type") or "N/A"),
+                    disabled=True,
+                    help="Session type is set at creation and not editable via API."
+                )
+
+            with edit_col2:
+                updated_start_date = st.date_input("Start Date", value=default_start_dt.date())
+                updated_start_time = st.time_input("Start Time", value=default_start_dt.replace(tzinfo=None).time())
+                updated_end_date = st.date_input("End Date", value=default_end_dt.date())
+                updated_end_time = st.time_input("End Time", value=default_end_dt.replace(tzinfo=None).time())
+
+            st.markdown("##### Check-in Window")
+            checkin_col1, checkin_col2 = st.columns(2)
+            with checkin_col1:
+                updated_checkin_open_date = st.date_input("Check-in Open Date", value=default_checkin_open_dt.date())
+                updated_checkin_open_time = st.time_input("Check-in Open Time", value=default_checkin_open_dt.replace(tzinfo=None).time())
+            with checkin_col2:
+                updated_checkin_close_date = st.date_input("Check-in Close Date", value=default_checkin_close_dt.date())
+                updated_checkin_close_time = st.time_input("Check-in Close Time", value=default_checkin_close_dt.replace(tzinfo=None).time())
+
+            st.markdown("##### Venue and Security")
+            venue_col1, venue_col2, venue_col3 = st.columns(3)
+            with venue_col1:
+                updated_venue_name = st.text_input(
+                    "Venue Name",
+                    value=str(selected_session.get("venue_name") or "")
+                )
+            with venue_col2:
+                updated_venue_lat = st.number_input(
+                    "Venue Latitude",
+                    value=_safe_float(selected_session.get("venue_latitude"), 1.2950),
+                    format="%.6f"
+                )
+            with venue_col3:
+                updated_venue_lon = st.number_input(
+                    "Venue Longitude",
+                    value=_safe_float(selected_session.get("venue_longitude"), 103.7737),
+                    format="%.6f"
+                )
+
+            settings_col1, settings_col2, settings_col3 = st.columns(3)
+            with settings_col1:
+                updated_require_liveness = st.checkbox(
+                    "Require Liveness Check",
+                    value=bool(selected_session.get("require_liveness_check", True))
+                )
+                updated_require_face_match = st.checkbox(
+                    "Require Face Match",
+                    value=bool(selected_session.get("require_face_match", False))
+                )
+            with settings_col2:
+                updated_geofence_radius = st.number_input(
+                    "Geofence Radius (m)",
+                    min_value=10,
+                    max_value=1000,
+                    value=int(_safe_float(selected_session.get("geofence_radius_meters"), 100))
+                )
+                updated_qr_code_enabled = st.checkbox(
+                    "Require QR Code",
+                    value=bool(selected_session.get("qr_code_enabled", False))
+                )
+            with settings_col3:
+                updated_risk_threshold = st.slider(
+                    "Risk Threshold",
+                    min_value=0.0,
+                    max_value=1.0,
+                    step=0.1,
+                    value=max(0.0, min(1.0, _safe_float(selected_session.get("risk_threshold"), 0.5)))
+                )
+
+            submit_edit_session = st.form_submit_button(
+                "Save Session Changes",
+                type="primary",
+                use_container_width=True
+            )
+
+            if submit_edit_session:
+                updated_start_dt = datetime.combine(updated_start_date, updated_start_time).replace(tzinfo=SG_TZ)
+                updated_end_dt = datetime.combine(updated_end_date, updated_end_time).replace(tzinfo=SG_TZ)
+                updated_checkin_open_dt = datetime.combine(updated_checkin_open_date, updated_checkin_open_time).replace(tzinfo=SG_TZ)
+                updated_checkin_close_dt = datetime.combine(updated_checkin_close_date, updated_checkin_close_time).replace(tzinfo=SG_TZ)
+
+                edit_errors = []
+                if not updated_session_name.strip():
+                    edit_errors.append("Session name is required.")
+                if updated_end_dt <= updated_start_dt:
+                    edit_errors.append("Session end time must be after start time.")
+                if updated_checkin_close_dt <= updated_checkin_open_dt:
+                    edit_errors.append("Check-in close time must be after open time.")
+
+                if edit_errors:
+                    for error in edit_errors:
+                        st.error(error)
+                else:
+                    update_payload = {
+                        "name": updated_session_name.strip(),
+                        "description": updated_description.strip() or None,
+                        "scheduled_start": to_api_datetime(updated_start_dt),
+                        "scheduled_end": to_api_datetime(updated_end_dt),
+                        "checkin_opens_at": to_api_datetime(updated_checkin_open_dt),
+                        "checkin_closes_at": to_api_datetime(updated_checkin_close_dt),
+                        "venue_name": updated_venue_name.strip() or None,
+                        "venue_latitude": updated_venue_lat,
+                        "venue_longitude": updated_venue_lon,
+                        "geofence_radius_meters": updated_geofence_radius,
+                        "require_liveness_check": updated_require_liveness,
+                        "require_face_match": updated_require_face_match,
+                        "risk_threshold": updated_risk_threshold,
+                        "qr_code_enabled": updated_qr_code_enabled,
+                    }
+
+                    update_response = api_patch(f"/sessions/{selected_session.get('id')}", update_payload)
+                    if update_response is not None and update_response.status_code == 200:
+                        st.success("Session updated successfully.")
+                        st.rerun()
+                    elif update_response is not None:
+                        st.error(f"Failed to update session: {response_error(update_response)}")
+                    else:
+                        st.error("Failed to connect to server while updating session.")
 
         st.markdown("---")
 
@@ -1130,6 +1380,10 @@ with tab5:
 with tab6:
     st.subheader("Device Management")
     st.markdown("View registered devices and revoke stale entries.")
+    if current_role != "admin":
+        st.error("Restricted access. Device management is admin-only.")
+        st.info("Instructors and TAs do not have permission to view or manage devices in this tab.")
+        st.stop()
     FEEDBACK_KEY = "device_mgmt_feedback"
 
     def device_ref(device: dict) -> str:
@@ -1361,5 +1615,6 @@ with tab6:
                             st.experimental_rerun()
                 with col2:
                     st.caption("Use the controls in each device card to update trust/active state or revoke.")
+
 
 

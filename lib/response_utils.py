@@ -2,7 +2,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import time
 
-
 def extract_items(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, dict):
         items = payload.get('items', [])

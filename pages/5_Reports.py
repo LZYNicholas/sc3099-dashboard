@@ -7,10 +7,10 @@ import pandas as pd
 import json
 from datetime import datetime
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import extract_items, fetch_all_items
+from lib.response_utils import extract_items, fetch_all_items, request_with_retry, response_error
 
 # Page configuration
-st.set_page_config(page_title="Reports - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="Reports - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 def get_headers():
     return get_auth_headers()
@@ -43,6 +43,8 @@ def main():
 
     with tab3:
         custom_reports()
+
+    st.caption("Session-level operational exports are available in `Sessions` to avoid duplicate report workflows.")
 
 
 def _offer_download(response, export_format, base_filename, title):
@@ -210,42 +212,50 @@ def course_reports():
                     key="course_format"
                 )
 
-            st.markdown("---")
-
-            st.markdown("#### Report Options")
-            col1, col2 = st.columns(2)
-
-            with col1:
-                include_details = st.checkbox("Include check-in details", value=True)
-                include_stats = st.checkbox("Include summary statistics", value=True)
-
-            with col2:
-                include_risk = st.checkbox("Include risk scores", value=False)
-                include_location = st.checkbox("Include location data", value=False)
+            use_date_range = st.checkbox("Filter by date range", value=False, key="course_export_use_dates")
+            date_col1, date_col2 = st.columns(2)
+            with date_col1:
+                start_date = st.date_input("Start Date", key="course_export_start", disabled=not use_date_range)
+            with date_col2:
+                end_date = st.date_input("End Date", key="course_export_end", disabled=not use_date_range)
 
             st.markdown("---")
 
             if st.button("Generate Course Report", use_container_width=True, key="gen_course_report"):
                 with st.spinner("Generating report..."):
                     try:
-                        checkins = _fetch_checkins({"course_id": selected_course})
-                        if not checkins:
-                            st.warning("No check-ins found for this course.")
+                        params = {"format": export_format}
+                        if use_date_range:
+                            params["start_date"] = pd.Timestamp(start_date).tz_localize("UTC").isoformat()
+                            params["end_date"] = pd.Timestamp(end_date).tz_localize("UTC").replace(
+                                hour=23, minute=59, second=59
+                            ).isoformat()
+
+                        response, error = request_with_retry(
+                            "GET",
+                            f"{API_BASE_URL}/export/attendance/{selected_course}",
+                            params=params,
+                            headers=get_headers(),
+                            timeout=25,
+                            retries=2,
+                        )
+                        if response is None:
+                            st.error(f"Failed to generate report: {error or 'request failed'}")
+                            return
+                        if response.status_code != 200:
+                            st.error(f"Failed to generate report ({response.status_code}): {response_error(response)}")
+                            return
+
+                        if not response.content:
+                            st.warning("No records found for the selected course/date range.")
                         else:
-                            df = _build_checkin_export_df(
-                                checkins,
-                                include_details=include_details,
-                                include_risk=include_risk,
-                                include_location=include_location,
-                            )
-                            st.dataframe(df.head(50), use_container_width=True, hide_index=True)
                             course_name = course_options[selected_course].replace(' ', '_').replace('-', '_')
                             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            _download_custom_export(
-                                df,
-                                export_format=export_format,
-                                filename_base=f"attendance_{course_name}_{timestamp}",
-                                include_stats=include_stats,
+                            _offer_download(
+                                response,
+                                export_format,
+                                f"attendance_{course_name}_{timestamp}",
+                                "Course Attendance Report",
                             )
 
                     except Exception as e:
@@ -283,12 +293,17 @@ def session_reports():
                     key="session_course_select"
                 )
 
-            sessions_response = requests.get(
-                f"{API_BASE_URL}/sessions/?course_id={selected_course}",
+            sessions_response, sessions_error = request_with_retry(
+                "GET",
+                f"{API_BASE_URL}/sessions/",
+                params={"course_id": selected_course},
                 headers=get_headers(),
-                timeout=10
+                timeout=10,
+                retries=2,
             )
-
+            if sessions_response is None:
+                st.error(f"Failed to load sessions: {sessions_error or 'request failed'}")
+                return
             sessions = extract_items(sessions_response.json()) if sessions_response.status_code == 200 else []
 
             with col2:
@@ -316,42 +331,38 @@ def session_reports():
                 )
 
             with col2:
-                include_photos = st.checkbox("Include photo references", value=False)
+                st.caption("Uses backend session export endpoint.")
 
             st.markdown("---")
 
             if st.button("Generate Session Report", use_container_width=True, key="gen_session_report"):
                 with st.spinner("Generating report..."):
                     try:
-                        checkins_resp = requests.get(
-                            f"{API_BASE_URL}/checkins/session/{selected_session}",
+                        export_resp, export_error = request_with_retry(
+                            "GET",
+                            f"{API_BASE_URL}/export/session/{selected_session}",
+                            params={"format": export_format},
                             headers=get_headers(),
-                            timeout=20
+                            timeout=25,
+                            retries=2,
                         )
-                        if checkins_resp.status_code != 200:
-                            st.error(f"Failed to load session check-ins. Status: {checkins_resp.status_code}")
+                        if export_resp is None:
+                            st.error(f"Failed to generate session report: {export_error or 'request failed'}")
+                            return
+                        if export_resp.status_code != 200:
+                            st.error(f"Failed to generate report ({export_resp.status_code}): {response_error(export_resp)}")
+                            return
+                        if not export_resp.content:
+                            st.warning("No check-ins found for this session.")
                         else:
-                            payload = checkins_resp.json()
-                            checkins = payload if isinstance(payload, list) else extract_items(payload)
-                            if not checkins:
-                                st.warning("No check-ins found for this session.")
-                            else:
-                                df = _build_checkin_export_df(
-                                    checkins,
-                                    include_details=True,
-                                    include_risk=True,
-                                    include_location=True,
-                                    include_photos=include_photos,
-                                )
-                                st.dataframe(df.head(50), use_container_width=True, hide_index=True)
-                                session_name = session_options[selected_session].split('(')[0].strip().replace(' ', '_')
-                                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                                _download_custom_export(
-                                    df,
-                                    export_format=export_format,
-                                    filename_base=f"session_{session_name}_{timestamp}",
-                                    include_stats=False,
-                                )
+                            session_name = session_options[selected_session].split('(')[0].strip().replace(' ', '_')
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            _offer_download(
+                                export_resp,
+                                export_format,
+                                f"session_{session_name}_{timestamp}",
+                                "Session Attendance Report",
+                            )
 
                     except Exception as e:
                         st.error(f"Error generating report: {str(e)}")
@@ -623,3 +634,4 @@ def custom_reports():
 
 if __name__ == "__main__":
     main()
+

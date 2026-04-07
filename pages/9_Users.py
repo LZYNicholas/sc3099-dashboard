@@ -7,7 +7,7 @@ import pandas as pd
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import extract_items
 
-st.set_page_config(page_title="User Management - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="User Management - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 
 def get_headers():
@@ -120,18 +120,36 @@ def main():
                 st.markdown("---")
                 st.subheader("User Detail & Update")
 
-                user_options = {
-                    f"{u.get('full_name', 'N/A')} ({u.get('email', 'N/A')})": str(u.get("id") or "")
+                feedback = st.session_state.pop("users_update_feedback", None)
+                if isinstance(feedback, dict):
+                    level = str(feedback.get("level") or "").strip().lower()
+                    message = str(feedback.get("message") or "").strip()
+                    if message:
+                        if level == "success":
+                            st.success(message)
+                        elif level == "error":
+                            st.error(message)
+                        else:
+                            st.info(message)
+
+                user_labels_by_id = {
+                    str(u.get("id")): f"{u.get('full_name', 'N/A')} ({u.get('email', 'N/A')})"
                     for u in filtered
                     if u.get("id")
                 }
-                if user_options:
-                    selected_user_label = st.selectbox(
+                user_ids = list(user_labels_by_id.keys())
+                if user_ids:
+                    persisted_user_id = str(st.session_state.get("users_detail_select_id") or "")
+                    default_index = user_ids.index(persisted_user_id) if persisted_user_id in user_ids else 0
+
+                    selected_user_id = st.selectbox(
                         "Select user",
-                        options=list(user_options.keys()),
-                        key="users_detail_select"
+                        options=user_ids,
+                        index=default_index,
+                        format_func=lambda uid: user_labels_by_id.get(uid, uid),
+                        key="users_detail_select",
                     )
-                    selected_user_id = user_options[selected_user_label]
+                    st.session_state["users_detail_select_id"] = selected_user_id
 
                     detail_response = requests.get(
                         f"{API_BASE_URL}/users/{selected_user_id}",
@@ -158,26 +176,57 @@ def main():
                             submit_update = st.form_submit_button("Update User", use_container_width=True)
 
                             if submit_update:
-                                patch_payload = {}
-                                if new_role != current_role:
-                                    patch_payload["role"] = new_role
-                                if new_is_active != is_active_value:
-                                    patch_payload["is_active"] = new_is_active
+                                role_changed = new_role != current_role
+                                active_changed = new_is_active != is_active_value
 
-                                if not patch_payload:
+                                if not role_changed and not active_changed:
                                     st.info("No changes detected.")
                                 else:
-                                    patch_response = requests.patch(
-                                        f"{API_BASE_URL}/users/{selected_user_id}",
-                                        json=patch_payload,
-                                        headers=get_headers(),
-                                        timeout=10,
-                                    )
-                                    if patch_response.status_code == 200:
-                                        st.success("User updated successfully.")
+                                    errors = []
+                                    headers = get_headers()
+
+                                    def update_role() -> None:
+                                        patch_response = requests.patch(
+                                            f"{API_BASE_URL}/users/{selected_user_id}",
+                                            json={"role": new_role},
+                                            headers=headers,
+                                            timeout=10,
+                                        )
+                                        if patch_response.status_code != 200:
+                                            errors.append(f"Role update failed: {response_error(patch_response)}")
+
+                                    def update_active_state() -> None:
+                                        action = "activate" if new_is_active else "deactivate"
+                                        state_response = requests.patch(
+                                            f"{API_BASE_URL}/admin/users/{selected_user_id}/{action}",
+                                            headers=headers,
+                                            timeout=10,
+                                        )
+                                        if state_response.status_code != 200:
+                                            errors.append(f"Status update failed: {response_error(state_response)}")
+
+                                    # Preserve ability to edit role while deactivating in one submit.
+                                    if role_changed and active_changed and not new_is_active:
+                                        update_role()
+                                        update_active_state()
+                                    else:
+                                        if active_changed:
+                                            update_active_state()
+                                        if role_changed:
+                                            update_role()
+
+                                    if not errors:
+                                        st.session_state["users_update_feedback"] = {
+                                            "level": "success",
+                                            "message": "User updated successfully.",
+                                        }
                                         st.rerun()
                                     else:
-                                        st.error(f"Failed to update user: {response_error(patch_response)}")
+                                        st.session_state["users_update_feedback"] = {
+                                            "level": "error",
+                                            "message": " ".join(errors),
+                                        }
+                                        st.rerun()
                     else:
                         st.error(f"Failed to load user details: {response_error(detail_response)}")
             else:
@@ -194,3 +243,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

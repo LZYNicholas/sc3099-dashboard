@@ -8,7 +8,7 @@ import plotly.express as px
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import fetch_all_items
 
-st.set_page_config(page_title="Students - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="Students - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 
 def get_headers():
@@ -137,24 +137,9 @@ def main():
         except Exception as e:
             st.error(f"Error loading student stats: {e}")
 
-    # All students overview table
-    st.markdown("---")
-    st.subheader("All Students Overview")
-
-    display = []
-    for s in students:
-        if not isinstance(s, dict):
-            continue
-        display.append({
-            "Name": s.get("student_name", s.get("full_name", s.get("email", "N/A"))),
-            "Email": s.get("email", s.get("student_email", "N/A")),
-            "Status": s.get("status", "active").title(),
-            "Face Enrolled": "Yes" if s.get("face_enrolled") else "No",
-        })
-
-    if display:
-        st.dataframe(pd.DataFrame(display), use_container_width=True, hide_index=True)
+    st.caption("Course-wide enrollment roster is managed in `Manage` to avoid duplicate list views.")
 
 
 if __name__ == "__main__":
     main()
+

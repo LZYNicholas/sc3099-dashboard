@@ -35,7 +35,7 @@ API_BASE_URL = auth_state.API_BASE_URL
 get_auth_headers = auth_state.get_auth_headers
 require_auth = auth_state.require_auth
 
-st.set_page_config(page_title="Analytics - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="Analytics - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 
@@ -635,3 +635,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

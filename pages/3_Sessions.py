@@ -23,7 +23,7 @@ except Exception:
     st_autorefresh = None
 
 # Page configuration
-st.set_page_config(page_title="Sessions - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="Sessions - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 SG_TZ = ZoneInfo("Asia/Singapore")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
@@ -195,30 +195,58 @@ def can_manage_qr(role: str) -> bool:
     return role in {'instructor', 'admin'}
 
 
-def can_manage_session(role: str) -> bool:
-    return role in {'instructor', 'admin'}
-
-
-def update_session_status(session_id, status):
+def _open_review_queue(session_id: str | None = None, course_id: str | None = None) -> None:
+    st.session_state["review_queue_session_id"] = session_id or ""
+    st.session_state["review_queue_course_id"] = course_id or ""
     try:
-        response, error = request_with_retry(
-            "PATCH",
-            f"{API_BASE_URL}/sessions/{session_id}",
-            json={"status": status},
-            headers={**get_headers(), "Content-Type": "application/json"},
-            timeout=10,
-            retries=2,
-        )
-        if response is None:
-            return False, (error or "Failed to update session status")
-        if response.status_code == 200:
-            return True, None
-        try:
-            return False, response.json().get('detail', 'Failed to update session status')
-        except Exception:
-            return False, 'Failed to update session status'
-    except Exception as error:
-        return False, str(error)
+        st.switch_page("pages/10_Review_Appeals.py")
+    except Exception:
+        st.info("Open `Review Appeals` from the sidebar to continue the review flow.")
+
+
+def _fetch_pending_reviews(limit: int = 200):
+    response, error = request_with_retry(
+        "GET",
+        f"{API_BASE_URL}/checkins/flagged",
+        params={"limit": limit},
+        headers=get_headers(),
+        timeout=10,
+        retries=2,
+    )
+    if response is None:
+        return [], (error or "request failed")
+    if response.status_code != 200:
+        return [], response_error(response)
+
+    payload = parse_json(response) or {}
+    if isinstance(payload, dict):
+        items = payload.get("items", [])
+        if isinstance(items, list):
+            return items, None
+    if isinstance(payload, list):
+        return payload, None
+    return [], None
+
+
+def _submit_quick_review(checkin_id: str, decision: str, note: str = "") -> tuple[bool, str | None]:
+    body: dict[str, str] = {"status": decision}
+    if note.strip():
+        body["review_notes"] = note.strip()
+
+    response, error = request_with_retry(
+        "POST",
+        f"{API_BASE_URL}/checkins/{checkin_id}/review",
+        json=body,
+        headers={**get_headers(), "Content-Type": "application/json"},
+        timeout=10,
+        retries=2,
+    )
+    if response is None:
+        return False, (error or "request failed")
+    if response.status_code == 200:
+        return True, None
+    return False, response_error(response, "Failed to review check-in")
+
 
 def main():
     require_auth()
@@ -228,7 +256,8 @@ def main():
         st.stop()
 
     st.title("Session Monitoring")
-    st.markdown("Monitor active sessions and view check-in details.")
+    st.markdown("Monitor sessions and view check-in details.")
+    st.info("For create/edit/status/delete actions, use `Manage` -> `Manage Sessions`.")
     auto_refresh_seconds = st.sidebar.selectbox("Auto Refresh", [0, 15, 30, 60], index=2)
     if auto_refresh_seconds > 0:
         _inject_auto_refresh(auto_refresh_seconds)
@@ -292,7 +321,29 @@ def main():
 
         if response.status_code == 200:
             sessions_data = parse_json(response)
-            sessions = sessions_data.get('items', []) if isinstance(sessions_data, dict) else sessions_data
+            all_sessions = sessions_data.get('items', []) if isinstance(sessions_data, dict) else sessions_data
+            sessions = list(all_sessions)
+
+            pending_reviews, pending_error = _fetch_pending_reviews(limit=200)
+            pending_by_session: dict[str, int] = {}
+            for item in pending_reviews:
+                sid = str(item.get("session_id") or "").strip()
+                if sid:
+                    pending_by_session[sid] = pending_by_session.get(sid, 0) + 1
+
+            if pending_error:
+                st.warning(f"Could not load pending review queue: {pending_error}")
+            elif pending_reviews:
+                pending_col1, pending_col2, pending_col3 = st.columns([2, 1, 1])
+                with pending_col1:
+                    st.warning(f"{len(pending_reviews)} check-in(s) need review (flagged/appealed).")
+                with pending_col2:
+                    if st.button("Open Review Queue", key="open_review_queue_top", use_container_width=True, type="primary"):
+                        selected_course_id = None if course_filter == "All" else course_filter
+                        _open_review_queue(course_id=selected_course_id)
+                with pending_col3:
+                    if st.button("Review All", key="open_review_queue_all", use_container_width=True):
+                        _open_review_queue()
 
             # Apply status filter
             if status_filter != 'All':
@@ -358,27 +409,7 @@ def main():
                             with col3:
                                 st.metric("Check-ins", get_checkin_count(session))
 
-                            if can_manage_session(current_role):
-                                action_col1, action_col2 = st.columns(2)
-                                with action_col1:
-                                    can_activate = not course_deleted
-                                    if st.button("▶ Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True, type="primary"):
-                                        ok, error = update_session_status(session['id'], 'active')
-                                        if ok:
-                                            st.success("Session activated.")
-                                            st.rerun()
-                                        else:
-                                            st.error(error or "Failed to activate session.")
-                                with action_col2:
-                                    if st.button("Cancel", key=f"cancel_{session['id']}", use_container_width=True):
-                                        ok, error = update_session_status(session['id'], 'cancelled')
-                                        if ok:
-                                            st.success("Session cancelled.")
-                                            st.rerun()
-                                        else:
-                                            st.error(error or "Failed to cancel session.")
-                            else:
-                                st.caption("Session status controls are restricted to instructors and admins.")
+                            st.caption("Status changes are managed in `Manage` -> `Manage Sessions`.")
 
                 st.markdown("---")
 
@@ -419,44 +450,80 @@ def main():
                             # Quick stats for this session
                             st.metric("Check-ins", get_checkin_count(session))
 
-                        next_actions = {
-                            'scheduled': ['active', 'cancelled'],
-                            'active': ['closed', 'cancelled'],
-                            'closed': [],
-                            'cancelled': []
-                        }.get(session.get('status'), [])
+                        st.caption("Status changes are managed in `Manage` -> `Manage Sessions`.")
+                        pending_for_session = pending_by_session.get(str(session.get("id") or ""), 0)
+                        if pending_for_session > 0:
+                            review_col1, review_col2 = st.columns([2, 1])
+                            with review_col1:
+                                st.warning(f"{pending_for_session} check-in(s) in this session need review.")
+                            with review_col2:
+                                if st.button("Review This Session", key=f"review_session_{session['id']}", use_container_width=True):
+                                    _open_review_queue(
+                                        session_id=str(session.get("id") or ""),
+                                        course_id=str(session.get("course_id") or ""),
+                                    )
 
-                        if can_manage_session(current_role):
-                            action_col1, action_col2, action_col3 = st.columns(3)
-                            with action_col1:
-                                can_activate = 'active' in next_actions and not course_deleted
-                                if st.button("Activate", key=f"activate_{session['id']}", disabled=not can_activate, use_container_width=True):
-                                    ok, error = update_session_status(session['id'], 'active')
-                                    if ok:
-                                        st.success("Session activated.")
-                                        st.rerun()
-                                    else:
-                                        st.error(error or "Failed to activate session.")
-                            with action_col2:
-                                can_close = 'closed' in next_actions
-                                if st.button("Close", key=f"close_{session['id']}", disabled=not can_close, use_container_width=True):
-                                    ok, error = update_session_status(session['id'], 'closed')
-                                    if ok:
-                                        st.success("Session closed.")
-                                        st.rerun()
-                                    else:
-                                        st.error(error or "Failed to close session.")
-                            with action_col3:
-                                can_cancel = 'cancelled' in next_actions
-                                if st.button("Cancel", key=f"cancel_{session['id']}", disabled=not can_cancel, use_container_width=True):
-                                    ok, error = update_session_status(session['id'], 'cancelled')
-                                    if ok:
-                                        st.success("Session cancelled.")
-                                        st.rerun()
-                                    else:
-                                        st.error(error or "Failed to cancel session.")
-                        else:
-                            st.caption("Session status controls are restricted to instructors and admins.")
+                            quick_review_open = st.checkbox(
+                                "Quick review here",
+                                value=False,
+                                key=f"quick_review_toggle_{session['id']}",
+                            )
+                            if quick_review_open:
+                                session_pending = [
+                                    item for item in pending_reviews
+                                    if str(item.get("session_id") or "") == str(session.get("id") or "")
+                                ]
+                                session_pending = sorted(
+                                    session_pending,
+                                    key=lambda item: float(item.get("risk_score") or 0.0),
+                                    reverse=True,
+                                )[:5]
+
+                                st.caption("Top pending items for this session (highest risk first).")
+                                for idx, item in enumerate(session_pending):
+                                    checkin_id = str(item.get("id") or "").strip()
+                                    if not checkin_id:
+                                        continue
+                                    student_name = str(item.get("student_name") or "Unknown Student")
+                                    status_value = str(item.get("status") or "flagged")
+                                    risk_value = float(item.get("risk_score") or 0.0)
+                                    checked_in_at = item.get("checked_in_at") or item.get("timestamp")
+
+                                    st.markdown(
+                                        f"**{student_name}** | `{status_value}` | Risk `{risk_value:.2f}` | {checked_in_at or 'N/A'}"
+                                    )
+                                    note = st.text_input(
+                                        "Review note (optional)",
+                                        key=f"quick_review_note_{session['id']}_{checkin_id}_{idx}",
+                                        placeholder="Optional reviewer note",
+                                    )
+                                    act_col1, act_col2 = st.columns(2)
+                                    with act_col1:
+                                        if st.button(
+                                            "Approve",
+                                            key=f"quick_review_approve_{session['id']}_{checkin_id}_{idx}",
+                                            type="primary",
+                                            use_container_width=True,
+                                        ):
+                                            ok, err = _submit_quick_review(checkin_id, "approved", note)
+                                            if ok:
+                                                st.success(f"Approved check-in for {student_name}.")
+                                                st.rerun()
+                                            else:
+                                                st.error(err or "Failed to approve check-in.")
+                                    with act_col2:
+                                        if st.button(
+                                            "Reject",
+                                            key=f"quick_review_reject_{session['id']}_{checkin_id}_{idx}",
+                                            use_container_width=True,
+                                        ):
+                                            ok, err = _submit_quick_review(checkin_id, "rejected", note)
+                                            if ok:
+                                                st.warning(f"Rejected check-in for {student_name}.")
+                                                st.rerun()
+                                            else:
+                                                st.error(err or "Failed to reject check-in.")
+                                    st.markdown("---")
 
                         if window_open:
                             st.markdown("#### Session QR")
@@ -493,70 +560,50 @@ def main():
                                 else:
                                     st.caption("No QR has been issued for this session yet.")
 
-                        # Show check-ins for active session
-                        if st.button(f"View Check-ins", key=f"view_{session['id']}"):
-                            st.session_state[f"show_checkins_{session['id']}"] = True
-
-                        if st.session_state.get(f"show_checkins_{session['id']}", False):
+                        show_checkins = st.checkbox(
+                            "Show Check-ins",
+                            value=False,
+                            key=f"show_checkins_{session['id']}",
+                        )
+                        if show_checkins:
                             show_session_checkins(session['id'])
 
                 st.markdown("---")
 
-            # All Sessions Table
-            st.subheader("All Sessions")
+            with st.expander("All Sessions Table / Export", expanded=False):
+                display_data = []
+                for s in sessions:
+                    course_deleted = s.get('course_id') not in active_course_ids
+                    course_display = s.get('course_name', s.get('course_code', 'N/A'))
+                    if course_deleted:
+                        course_display = f"{course_display} [DELETED]"
 
-            # Prepare data for display
-            display_data = []
-            for s in sessions:
-                course_deleted = s.get('course_id') not in active_course_ids
-                course_display = s.get('course_name', s.get('course_code', 'N/A'))
-                if course_deleted:
-                    course_display = f"⚠️ {course_display} [DELETED]"
+                    display_data.append({
+                        'Status': f"{get_status_color(s.get('status', ''))} {s.get('status', 'unknown').title()}",
+                        'Name': s.get('name', 'N/A'),
+                        'Course': course_display,
+                        'Type': s.get('session_type', 'N/A'),
+                        'Scheduled Start': format_datetime_local(s.get('scheduled_start')),
+                        'Check-ins': get_checkin_count(s),
+                        'ID': s.get('id', '')
+                    })
 
-                display_data.append({
-                    'Status': f"{get_status_color(s.get('status', ''))} {s.get('status', 'unknown').title()}",
-                    'Name': s.get('name', 'N/A'),
-                    'Course': course_display,
-                    'Type': s.get('session_type', 'N/A'),
-                    'Scheduled Start': format_datetime_local(s.get('scheduled_start')),
-                    'Check-ins': get_checkin_count(s),
-                    'ID': s.get('id', '')
-                })
+                df = pd.DataFrame(display_data)
+                st.dataframe(df.drop(columns=['ID']), use_container_width=True, hide_index=True)
 
-            df = pd.DataFrame(display_data)
-            st.dataframe(df.drop(columns=['ID']), use_container_width=True, hide_index=True)
+                sessions_csv = df.drop(columns=['ID']).to_csv(index=False)
+                st.download_button(
+                    "Download Sessions CSV",
+                    sessions_csv,
+                    "all_sessions.csv",
+                    "text/csv",
+                    use_container_width=True,
+                    key="csv_export_all_sessions",
+                )
 
-            # Export all sessions as CSV
-            sessions_csv = df.drop(columns=['ID']).to_csv(index=False)
-            st.download_button(
-                "Download Sessions CSV",
-                sessions_csv,
-                "all_sessions.csv",
-                "text/csv",
-                use_container_width=True,
-                key="csv_export_all_sessions",
-            )
-
-            # Session Details
             st.markdown("---")
-            st.subheader("Session Details")
-
-            session_options = {}
-            for s in sessions:
-                course_deleted = s.get('course_id') not in active_course_ids
-                label = f"{s.get('name', 'Session')} ({s.get('course_name', 'Course')})"
-                if course_deleted:
-                    label = f"⚠️ {label}"
-                session_options[s['id']] = label
-
-            selected_session_id = st.selectbox(
-                "Select a session to view details",
-                options=list(session_options.keys()),
-                format_func=lambda x: session_options[x]
-            )
-
-            if selected_session_id:
-                show_session_details(selected_session_id, sessions, active_course_ids)
+            if current_role in {"instructor", "admin"}:
+                st.caption("Use the `Check-ins` page from the sidebar for global cross-session exploration and exports.")
 
         else:
             st.error(f"Failed to load sessions ({response.status_code}): {response_error(response)}")
@@ -752,3 +799,4 @@ def show_session_details(session_id, sessions, active_course_ids=None):
 
 if __name__ == "__main__":
     main()
+

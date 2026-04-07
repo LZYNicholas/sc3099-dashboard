@@ -10,7 +10,7 @@ from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
 from lib.response_utils import bool_query, fetch_all_items
 
 # Page configuration
-st.set_page_config(page_title="Courses - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="Courses - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 def get_headers():
     return get_auth_headers()
@@ -208,34 +208,7 @@ def main():
                 except Exception as e:
                     st.warning(f"Could not load course statistics: {str(e)}")
 
-                # Enrolled Students Section
-                st.markdown("---")
-                st.subheader("Enrolled Students")
-                try:
-                    enroll_response = requests.get(
-                        f"{API_BASE_URL}/enrollments/course/{selected_course_id}",
-                        headers=get_headers(),
-                        timeout=10
-                    )
-
-                    if enroll_response.status_code == 200:
-                        enroll_data = enroll_response.json()
-                        enrollments = enroll_data.get('students', enroll_data) if isinstance(enroll_data, dict) else enroll_data
-                        if enrollments:
-                            df = pd.DataFrame(enrollments)
-                            display_cols = ['student_name', 'student_email', 'enrolled_at', 'status']
-                            available_cols = [c for c in display_cols if c in df.columns]
-                            if available_cols:
-                                st.dataframe(df[available_cols], use_container_width=True, hide_index=True)
-                            else:
-                                st.dataframe(df, use_container_width=True, hide_index=True)
-                        else:
-                            st.info("No students enrolled in this course.")
-                    else:
-                        st.warning(f"Could not load enrollment data ({enroll_response.status_code}): {response_error(enroll_response)}")
-
-                except Exception as e:
-                    st.warning(f"Could not load enrollments: {str(e)}")
+                st.caption("Enrollment list and actions are centralized in `Manage` and `Students` to keep this page analytics-focused.")
 
         else:
             st.error("Failed to load courses or no courses were returned.")
@@ -246,3 +219,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -17,7 +17,7 @@ except Exception:
     st_autorefresh = None
 
 # Page configuration
-st.set_page_config(page_title="Overview - SAIV Dashboard", layout="wide")
+st.set_page_config(page_title="Overview - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 def get_headers():
     return get_auth_headers()
@@ -44,36 +44,6 @@ def _inject_auto_refresh(seconds: int) -> None:
         height=0,
         width=0,
     )
-
-
-def _submit_review(checkin_id: str, decision: str, note: str = ""):
-    """Submit an approve/reject review for a flagged check-in."""
-    try:
-        payload = {"status": decision}
-        if note:
-            payload["review_notes"] = note
-        resp, error = request_with_retry(
-            "POST",
-            f"{API_BASE_URL}/checkins/{checkin_id}/review",
-            json=payload,
-            headers=get_headers(),
-            timeout=10,
-            retries=2,
-        )
-        if resp is None:
-            st.error(f"Review failed: {error or 'request failed'}")
-            return
-        if resp.status_code in (200, 201):
-            st.success(f"Check-in {decision} successfully.")
-            st.rerun()
-        else:
-            try:
-                detail = resp.json().get("detail", f"Failed ({resp.status_code})")
-            except Exception:
-                detail = f"Failed ({resp.status_code})"
-            st.error(f"Review failed: {detail}")
-    except Exception as e:
-        st.error(f"Connection error: {e}")
 
 
 def main():
@@ -232,58 +202,7 @@ def main():
             else:
                 st.info("No recent activity to display.")
 
-            # Flagged Check-ins
-            st.subheader("Flagged Check-ins Requiring Review")
-            try:
-                flagged_response, flagged_error = request_with_retry(
-                    "GET",
-                    f"{API_BASE_URL}/checkins/flagged?limit=10",
-                    headers=get_headers(),
-                    timeout=10,
-                    retries=2,
-                )
-                if flagged_response is None:
-                    st.warning(f"Could not load flagged check-ins: {flagged_error or 'request failed'}")
-                    return
-                if flagged_response.status_code == 200:
-                    flagged_data = parse_json(flagged_response)
-                    flagged_items = flagged_data.get('items', flagged_data) if isinstance(flagged_data, dict) else flagged_data
-                    if flagged_items:
-                        for item in flagged_items:
-                            checkin_id = item.get('id', '')
-                            with st.expander(f"{item.get('student_name', 'Unknown')} - {item.get('session_name', 'Session')} (risk: {item.get('risk_score', 0):.2f})"):
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write(f"**Risk Score:** {item.get('risk_score', 0):.2f}")
-                                    st.write(f"**Status:** {item.get('status', 'flagged')}")
-                                    st.write(f"**Time:** {item.get('checked_in_at', item.get('timestamp', 'Unknown'))}")
-                                with col2:
-                                    flags = item.get('flags', item.get('risk_flags', []))
-                                    if isinstance(flags, list):
-                                        st.write(f"**Flags:** {', '.join(flags) if flags else 'None'}")
-                                    else:
-                                        st.write(f"**Flags:** {flags}")
-                                    st.write(f"**Student ID:** `{item.get('student_id', 'N/A')}`")
-
-                                # Review actions
-                                review_note = st.text_input(
-                                    "Review notes (optional)",
-                                    key=f"review_note_{checkin_id}",
-                                    placeholder="Add a note for this review decision..."
-                                )
-                                btn_col1, btn_col2 = st.columns(2)
-                                with btn_col1:
-                                    if st.button("Approve", key=f"approve_{checkin_id}", use_container_width=True, type="primary"):
-                                        _submit_review(checkin_id, "approved", review_note)
-                                with btn_col2:
-                                    if st.button("Reject", key=f"reject_{checkin_id}", use_container_width=True):
-                                        _submit_review(checkin_id, "rejected", review_note)
-                    else:
-                        st.success("No flagged check-ins requiring review.")
-                else:
-                    st.info(f"Could not load flagged check-ins ({flagged_response.status_code}): {response_error(flagged_response)}")
-            except Exception as e:
-                st.warning(f"Could not load flagged check-ins: {str(e)}")
+            st.caption("Action workflows are in `Sessions` and `Review Appeals`; this page is summary-only.")
 
         else:
             st.error(f"Failed to load statistics ({response.status_code}): {response_error(response)}")
@@ -295,3 +214,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
