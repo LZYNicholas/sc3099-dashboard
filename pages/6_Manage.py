@@ -32,6 +32,9 @@ def get_headers():
     headers["Content-Type"] = "application/json"
     return headers
 
+def clear_api_cache() -> None:
+    _API_GET_CACHE.clear()
+
 def api_post(endpoint: str, data: dict):
     """Make POST request to API"""
     try:
@@ -41,6 +44,7 @@ def api_post(endpoint: str, data: dict):
             headers=get_headers(),
             timeout=10
         )
+        clear_api_cache()
         return response
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
@@ -116,6 +120,77 @@ def fetch_all_courses(is_active: bool | None = None, page_size: int = 200) -> li
 
     return items
 
+def fetch_all_sessions(page_size: int = 200, filters: dict[str, object] | None = None) -> list[dict]:
+    items: list[dict] = []
+    offset = 0
+    base_filters = dict(filters or {})
+
+    while True:
+        params: dict[str, object] = {**base_filters, "limit": page_size, "offset": offset}
+        response = api_get("/sessions/", params)
+        if response is None or response.status_code != 200:
+            break
+
+        page_items = response_items(response)
+        if not page_items:
+            break
+
+        items.extend(page_items)
+
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            total = payload.get("total")
+            if isinstance(total, int) and len(items) >= total:
+                break
+
+        if len(page_items) < page_size:
+            break
+
+        offset += page_size
+
+    return items
+
+def fetch_all_users(filters: dict[str, object] | None = None, page_size: int = 100) -> tuple[list[dict], str | None]:
+    items: list[dict] = []
+    offset = 0
+    safe_page_size = max(1, min(int(page_size), 100))
+    base_filters = dict(filters or {})
+
+    while True:
+        params: dict[str, object] = {**base_filters, "limit": safe_page_size, "offset": offset}
+        response = api_get("/users/", params)
+        if response is None:
+            return [], "Failed to connect to server"
+        if response.status_code != 200:
+            return [], response_error(response, "Failed to load users")
+
+        page_items = response_items(response)
+        if not page_items:
+            break
+
+        items.extend(page_items)
+
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            total = payload.get("total")
+            if isinstance(total, int) and len(items) >= total:
+                break
+
+        if len(page_items) < safe_page_size:
+            break
+
+        offset += safe_page_size
+
+    return items, None
+
 def api_patch(endpoint: str, data: dict):
     """Make PATCH request to API"""
     try:
@@ -125,6 +200,7 @@ def api_patch(endpoint: str, data: dict):
             headers=get_headers(),
             timeout=10
         )
+        clear_api_cache()
         return response
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
@@ -139,6 +215,7 @@ def api_put(endpoint: str, data: dict):
             headers=get_headers(),
             timeout=10
         )
+        clear_api_cache()
         return response
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
@@ -157,6 +234,7 @@ def api_delete(endpoint: str):
             headers=headers,
             timeout=10
         )
+        clear_api_cache()
         return response
     except Exception as e:
         st.error(f"Connection error: {str(e)}")
@@ -199,14 +277,12 @@ def response_error(response: requests.Response | None, fallback: str = "Unknown 
 
 
 def fetch_active_instructors() -> tuple[list[dict], str | None]:
-    response = api_get("/users/", {"role": "instructor", "is_active": True, "limit": 100})
-    if response is None:
-        return [], "Failed to connect to server"
-    if response.status_code != 200:
-        return [], response_error(response, "Failed to load instructors")
+    users, users_error = fetch_all_users({"role": "instructor", "is_active": True}, page_size=100)
+    if users_error:
+        return [], users_error
 
     instructors = []
-    for user in response_items(response):
+    for user in users:
         user_id = str(user.get("id") or "").strip()
         if not user_id:
             continue
@@ -397,12 +473,10 @@ with tab1:
             edit_instructors, edit_instructor_error = fetch_active_instructors()
 
         sessions_by_course: dict[str, list[dict]] = {}
-        sessions_response = api_get("/sessions/", {"limit": 500})
-        if sessions_response is not None and sessions_response.status_code == 200:
-            for session in response_items(sessions_response):
-                course_id = session.get('course_id')
-                if isinstance(course_id, str):
-                    sessions_by_course.setdefault(course_id, []).append(session)
+        for session in fetch_all_sessions(page_size=200):
+            course_id = session.get('course_id')
+            if isinstance(course_id, str):
+                sessions_by_course.setdefault(course_id, []).append(session)
         for course in courses:
             with st.expander(f"{course.get('code')} - {course.get('name')}"):
                 col1, col2 = st.columns(2)
@@ -829,10 +903,12 @@ with tab3:
         st.markdown("##### Enroll Single Student")
         
         # Load all students for selection
-        students_response = api_get("/users/", {"role": "student", "limit": 100})
         available_students = []
-        if students_response is not None and students_response.status_code == 200:
-            for user in response_items(students_response):
+        students, students_error = fetch_all_users({"role": "student"}, page_size=100)
+        if students_error:
+            st.warning(f"Could not load full student list: {students_error}")
+        else:
+            for user in students:
                 user_id = str(user.get("id") or "").strip()
                 if not user_id:
                     continue
@@ -978,11 +1054,8 @@ with tab4:
     st.subheader("Manage Sessions")
     st.markdown("Edit session details, manage lifecycle status, and delete eligible sessions.")
 
-    # Get sessions
-    response = api_get("/sessions/", {"limit": 100})
-    sessions = []
-    if response is not None and response.status_code == 200:
-        sessions = response_items(response)
+    # Get sessions (paginated to avoid truncation)
+    sessions = fetch_all_sessions(page_size=200)
 
     # Also get active courses to check if session's course is still active
     active_course_ids = {c['id'] for c in fetch_all_courses(is_active=True)}
@@ -1021,7 +1094,17 @@ with tab4:
             index=default_session_index,
             help="Activate is only available for sessions that are currently scheduled and whose course is still active."
         )
-        selected_session = session_options[selected_session_name]
+        selected_session = dict(session_options[selected_session_name])
+        selected_session_id = selected_session.get("id")
+        if selected_session_id:
+            detail_response = api_get(f"/sessions/{selected_session_id}")
+            if detail_response is not None and detail_response.status_code == 200:
+                try:
+                    detail_payload = detail_response.json()
+                except Exception:
+                    detail_payload = None
+                if isinstance(detail_payload, dict):
+                    selected_session.update(detail_payload)
 
         st.markdown("---")
 
@@ -1064,6 +1147,7 @@ with tab4:
             selected_session.get("checkin_closes_at"),
             default_start_dt + timedelta(minutes=30)
         )
+        edit_session_key = str(selected_session.get("id") or "unknown")
 
         with st.form(f"edit_session_form_{selected_session.get('id')}"):
             edit_col1, edit_col2 = st.columns(2)
@@ -1071,74 +1155,84 @@ with tab4:
             with edit_col1:
                 updated_session_name = st.text_input(
                     "Session Name *",
-                    value=str(selected_session.get("name") or "")
+                    value=str(selected_session.get("name") or ""),
+                    key=f"edit_session_name_{edit_session_key}"
                 )
                 updated_description = st.text_area(
                     "Description",
-                    value=str(selected_session.get("description") or "")
+                    value=str(selected_session.get("description") or ""),
+                    key=f"edit_description_{edit_session_key}"
                 )
                 st.text_input(
                     "Session Type",
                     value=str(selected_session.get("session_type") or "N/A"),
                     disabled=True,
-                    help="Session type is set at creation and not editable via API."
+                    help="Session type is set at creation and not editable via API.",
+                    key=f"edit_session_type_{edit_session_key}"
                 )
 
             with edit_col2:
-                updated_start_date = st.date_input("Start Date", value=default_start_dt.date())
-                updated_start_time = st.time_input("Start Time", value=default_start_dt.replace(tzinfo=None).time())
-                updated_end_date = st.date_input("End Date", value=default_end_dt.date())
-                updated_end_time = st.time_input("End Time", value=default_end_dt.replace(tzinfo=None).time())
+                updated_start_date = st.date_input("Start Date", value=default_start_dt.date(), key=f"edit_start_date_{edit_session_key}")
+                updated_start_time = st.time_input("Start Time", value=default_start_dt.replace(tzinfo=None).time(), key=f"edit_start_time_{edit_session_key}")
+                updated_end_date = st.date_input("End Date", value=default_end_dt.date(), key=f"edit_end_date_{edit_session_key}")
+                updated_end_time = st.time_input("End Time", value=default_end_dt.replace(tzinfo=None).time(), key=f"edit_end_time_{edit_session_key}")
 
             st.markdown("##### Check-in Window")
             checkin_col1, checkin_col2 = st.columns(2)
             with checkin_col1:
-                updated_checkin_open_date = st.date_input("Check-in Open Date", value=default_checkin_open_dt.date())
-                updated_checkin_open_time = st.time_input("Check-in Open Time", value=default_checkin_open_dt.replace(tzinfo=None).time())
+                updated_checkin_open_date = st.date_input("Check-in Open Date", value=default_checkin_open_dt.date(), key=f"edit_checkin_open_date_{edit_session_key}")
+                updated_checkin_open_time = st.time_input("Check-in Open Time", value=default_checkin_open_dt.replace(tzinfo=None).time(), key=f"edit_checkin_open_time_{edit_session_key}")
             with checkin_col2:
-                updated_checkin_close_date = st.date_input("Check-in Close Date", value=default_checkin_close_dt.date())
-                updated_checkin_close_time = st.time_input("Check-in Close Time", value=default_checkin_close_dt.replace(tzinfo=None).time())
+                updated_checkin_close_date = st.date_input("Check-in Close Date", value=default_checkin_close_dt.date(), key=f"edit_checkin_close_date_{edit_session_key}")
+                updated_checkin_close_time = st.time_input("Check-in Close Time", value=default_checkin_close_dt.replace(tzinfo=None).time(), key=f"edit_checkin_close_time_{edit_session_key}")
 
             st.markdown("##### Venue and Security")
             venue_col1, venue_col2, venue_col3 = st.columns(3)
             with venue_col1:
                 updated_venue_name = st.text_input(
                     "Venue Name",
-                    value=str(selected_session.get("venue_name") or "")
+                    value=str(selected_session.get("venue_name") or ""),
+                    key=f"edit_venue_name_{edit_session_key}"
                 )
             with venue_col2:
                 updated_venue_lat = st.number_input(
                     "Venue Latitude",
                     value=_safe_float(selected_session.get("venue_latitude"), 1.2950),
-                    format="%.6f"
+                    format="%.6f",
+                    key=f"edit_venue_lat_{edit_session_key}"
                 )
             with venue_col3:
                 updated_venue_lon = st.number_input(
                     "Venue Longitude",
                     value=_safe_float(selected_session.get("venue_longitude"), 103.7737),
-                    format="%.6f"
+                    format="%.6f",
+                    key=f"edit_venue_lon_{edit_session_key}"
                 )
 
             settings_col1, settings_col2, settings_col3 = st.columns(3)
             with settings_col1:
                 updated_require_liveness = st.checkbox(
                     "Require Liveness Check",
-                    value=bool(selected_session.get("require_liveness_check", True))
+                    value=bool(selected_session.get("require_liveness_check", True)),
+                    key=f"edit_require_liveness_{edit_session_key}"
                 )
                 updated_require_face_match = st.checkbox(
                     "Require Face Match",
-                    value=bool(selected_session.get("require_face_match", False))
+                    value=bool(selected_session.get("require_face_match", False)),
+                    key=f"edit_require_face_match_{edit_session_key}"
                 )
             with settings_col2:
                 updated_geofence_radius = st.number_input(
                     "Geofence Radius (m)",
                     min_value=10,
                     max_value=1000,
-                    value=int(_safe_float(selected_session.get("geofence_radius_meters"), 100))
+                    value=int(_safe_float(selected_session.get("geofence_radius_meters"), 100)),
+                    key=f"edit_geofence_{edit_session_key}"
                 )
                 updated_qr_code_enabled = st.checkbox(
                     "Require QR Code",
-                    value=bool(selected_session.get("qr_code_enabled", False))
+                    value=bool(selected_session.get("qr_code_enabled", False)),
+                    key=f"edit_qr_enabled_{edit_session_key}"
                 )
             with settings_col3:
                 updated_risk_threshold = st.slider(
@@ -1146,7 +1240,8 @@ with tab4:
                     min_value=0.0,
                     max_value=1.0,
                     step=0.1,
-                    value=max(0.0, min(1.0, _safe_float(selected_session.get("risk_threshold"), 0.5)))
+                    value=max(0.0, min(1.0, _safe_float(selected_session.get("risk_threshold"), 0.5))),
+                    key=f"edit_risk_threshold_{edit_session_key}"
                 )
 
             submit_edit_session = st.form_submit_button(

@@ -29,6 +29,44 @@ def response_error(response: requests.Response | None, fallback: str = "Unknown 
     return text or fallback
 
 
+def fetch_all_users(page_size: int = 100) -> tuple[list[dict], str | None]:
+    users: list[dict] = []
+    offset = 0
+
+    while True:
+        response = requests.get(
+            f"{API_BASE_URL}/users/",
+            params={"limit": page_size, "offset": offset},
+            headers=get_headers(),
+            timeout=15,
+        )
+        if response.status_code != 200:
+            return [], response_error(response, f"Failed to load users ({response.status_code})")
+
+        page_users = extract_items(response.json())
+        if not page_users:
+            break
+
+        users.extend(page_users)
+
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            total = payload.get("total")
+            if isinstance(total, int) and len(users) >= total:
+                break
+
+        if len(page_users) < page_size:
+            break
+
+        offset += page_size
+
+    return users, None
+
+
 def main():
     require_auth()
 
@@ -41,57 +79,53 @@ def main():
     st.markdown("View and manage system users.")
 
     try:
-        response = requests.get(
-            f"{API_BASE_URL}/users/",
-            headers=get_headers(),
-            timeout=15,
-        )
+        users, users_error = fetch_all_users(page_size=100)
+        if users_error:
+            st.error(users_error)
+            return
 
-        if response.status_code == 200:
-            users = extract_items(response.json())
+        if not users:
+            st.info("No users found.")
+            return
 
-            if not users:
-                st.info("No users found.")
-                return
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Users", len(users))
+        with col2:
+            students = sum(1 for u in users if u.get("role") == "student")
+            st.metric("Students", students)
+        with col3:
+            instructors = sum(1 for u in users if u.get("role") in ("instructor", "ta"))
+            st.metric("Instructors / TAs", instructors)
+        with col4:
+            admins = sum(1 for u in users if u.get("role") == "admin")
+            st.metric("Admins", admins)
 
-            # Summary metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Users", len(users))
-            with col2:
-                students = sum(1 for u in users if u.get("role") == "student")
-                st.metric("Students", students)
-            with col3:
-                instructors = sum(1 for u in users if u.get("role") in ("instructor", "ta"))
-                st.metric("Instructors / TAs", instructors)
-            with col4:
-                admins = sum(1 for u in users if u.get("role") == "admin")
-                st.metric("Admins", admins)
+        st.markdown("---")
 
-            st.markdown("---")
+        # Filters
+        col1, col2 = st.columns(2)
+        with col1:
+            role_filter = st.selectbox(
+                "Filter by Role",
+                options=["All", "student", "instructor", "ta", "admin"],
+            )
+        with col2:
+            search = st.text_input("Search by name or email")
 
-            # Filters
-            col1, col2 = st.columns(2)
-            with col1:
-                role_filter = st.selectbox(
-                    "Filter by Role",
-                    options=["All", "student", "instructor", "ta", "admin"],
-                )
-            with col2:
-                search = st.text_input("Search by name or email")
+        filtered = users
+        if role_filter != "All":
+            filtered = [u for u in filtered if u.get("role") == role_filter]
+        if search:
+            q = search.lower()
+            filtered = [
+                u for u in filtered
+                if q in u.get("full_name", "").lower() or q in u.get("email", "").lower()
+            ]
 
-            filtered = users
-            if role_filter != "All":
-                filtered = [u for u in filtered if u.get("role") == role_filter]
-            if search:
-                q = search.lower()
-                filtered = [
-                    u for u in filtered
-                    if q in u.get("full_name", "").lower() or q in u.get("email", "").lower()
-                ]
-
-            # Users table
-            if filtered:
+        # Users table
+        if filtered:
                 display = []
                 for u in filtered:
                     display.append({
@@ -229,13 +263,8 @@ def main():
                                         st.rerun()
                     else:
                         st.error(f"Failed to load user details: {response_error(detail_response)}")
-            else:
-                st.info("No users match the current filters.")
-
-        elif response.status_code == 403:
-            st.error("You don't have permission to view users.")
         else:
-            st.error(f"Failed to load users. Status: {response.status_code}")
+            st.info("No users match the current filters.")
 
     except Exception as e:
         st.error(f"Connection error: {str(e)}")

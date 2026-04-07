@@ -303,7 +303,9 @@ def main():
     try:
         is_ta = current_role == 'ta'
         url = f"{API_BASE_URL}/sessions/my-sessions" if is_ta else f"{API_BASE_URL}/sessions/"
-        params = {"limit": 100}
+        params = {"limit": 200}
+        if not is_ta:
+            params["offset"] = 0
         if course_filter != 'All':
             params['course_id'] = course_filter
 
@@ -323,6 +325,41 @@ def main():
             sessions_data = parse_json(response)
             all_sessions = sessions_data.get('items', []) if isinstance(sessions_data, dict) else sessions_data
             sessions = list(all_sessions)
+
+            # Paginate non-TA listing to avoid truncating at first page.
+            if not is_ta and isinstance(sessions_data, dict):
+                total = sessions_data.get('total')
+                if isinstance(total, int):
+                    offset = len(sessions)
+                    while offset < total:
+                        page_params = dict(params)
+                        page_params["offset"] = offset
+                        page_response, page_error = request_with_retry(
+                            "GET",
+                            url,
+                            params=page_params,
+                            headers=get_headers(),
+                            timeout=10,
+                            retries=2,
+                        )
+                        if page_response is None:
+                            st.warning(f"Partial session list loaded: {page_error or 'request failed'}")
+                            break
+                        if page_response.status_code != 200:
+                            st.warning(
+                                f"Partial session list loaded ({page_response.status_code}): "
+                                f"{response_error(page_response)}"
+                            )
+                            break
+
+                        page_data = parse_json(page_response)
+                        page_items = page_data.get('items', []) if isinstance(page_data, dict) else []
+                        if not page_items:
+                            break
+                        sessions.extend(page_items)
+                        if len(page_items) < int(page_params["limit"]):
+                            break
+                        offset += len(page_items)
 
             pending_reviews, pending_error = _fetch_pending_reviews(limit=200)
             pending_by_session: dict[str, int] = {}

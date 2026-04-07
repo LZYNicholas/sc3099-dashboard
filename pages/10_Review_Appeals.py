@@ -64,20 +64,41 @@ def _risk_label(score):
 
 def fetch_flagged_checkins(limit: int = 100):
     try:
-        response = requests.get(
-            f"{API_BASE_URL}/checkins/flagged",
-            params={"limit": limit},
-            headers=get_auth_headers(),
-            timeout=10,
-        )
-        if response.status_code == 200:
+        page_size = max(1, min(int(limit), 200))
+        offset = 0
+        items: list[dict] = []
+
+        while True:
+            response = requests.get(
+                f"{API_BASE_URL}/checkins/flagged",
+                params={"limit": page_size, "offset": offset},
+                headers=get_auth_headers(),
+                timeout=10,
+            )
+            if response.status_code != 200:
+                return False, f"Error {response.status_code}: {response.text}"
+
             data = response.json()
             if isinstance(data, list):
+                # Fallback for non-paginated payloads.
                 return True, data
-            if isinstance(data, dict) and "items" in data:
-                return True, data["items"]
-            return True, data
-        return False, f"Error {response.status_code}: {response.text}"
+            if not isinstance(data, dict):
+                return True, items
+
+            page_items = data.get("items", [])
+            if not isinstance(page_items, list) or not page_items:
+                break
+
+            items.extend(page_items)
+
+            total = data.get("total")
+            if isinstance(total, int) and len(items) >= total:
+                break
+            if len(page_items) < page_size:
+                break
+            offset += page_size
+
+        return True, items
     except Exception as e:
         return False, f"Connection error: {e}"
 
