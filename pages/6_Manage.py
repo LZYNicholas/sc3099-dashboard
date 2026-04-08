@@ -1704,10 +1704,10 @@ with tab6:
                         revoked, revoke_error = revoke_device(device['id'], headers)
                         if revoked:
                             set_feedback("success", "Device revoked.")
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             set_feedback("error", f"Failed to revoke device: {revoke_error}")
-                            st.experimental_rerun()
+                            st.rerun()
                 with col2:
                     st.caption("Use the controls in each device card to update trust/active state or revoke.")
 
