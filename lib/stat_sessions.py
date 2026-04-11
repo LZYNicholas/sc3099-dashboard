@@ -7,11 +7,12 @@ import requests
 import pandas as pd
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import bool_query, extract_items, fetch_all_items, request_with_retry, response_error, parse_json
+from lib.response_utils import bool_query, extract_items, fetch_all_items, request_with_retry, response_error, parse_json, friendly_error
+from lib.ui_theme import apply_theme
 
 try:
     from st_keyup import st_keyup
@@ -23,10 +24,10 @@ except Exception:
     st_autorefresh = None
 
 # Page configuration
-st.set_page_config(page_title="Sessions - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 SG_TZ = ZoneInfo("Asia/Singapore")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+AUTO_REFRESH_SECONDS = 30
 
 def get_headers():
     return get_auth_headers()
@@ -39,17 +40,7 @@ def _inject_auto_refresh(seconds: int) -> None:
     if st_autorefresh is not None:
         st_autorefresh(interval=interval_ms, key=f"sessions_autorefresh_{seconds}")
         return
-    components.html(
-        f"""
-        <script>
-          setTimeout(function () {{
-            window.parent.location.reload();
-          }}, {interval_ms});
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+    st.caption("Auto-refresh dependency missing; polling is temporarily disabled on this page.")
 
 
 def get_status_color(status):
@@ -199,7 +190,7 @@ def _open_review_queue(session_id: str | None = None, course_id: str | None = No
     st.session_state["review_queue_session_id"] = session_id or ""
     st.session_state["review_queue_course_id"] = course_id or ""
     try:
-        st.switch_page("pages/10_Review_Appeals.py")
+        st.switch_page("pages/6_Reveal_Appeals.py")
     except Exception:
         st.info("Open `Review Appeals` from the sidebar to continue the review flow.")
 
@@ -248,20 +239,71 @@ def _submit_quick_review(checkin_id: str, decision: str, note: str = "") -> tupl
     return False, response_error(response, "Failed to review check-in")
 
 
-def main():
-    require_auth()
+def _update_session_status(session_id: str, status: str) -> tuple[bool, str | None]:
+    response, error = request_with_retry(
+        "PATCH",
+        f"{API_BASE_URL}/sessions/{session_id}",
+        json={"status": status},
+        headers={**get_headers(), "Content-Type": "application/json"},
+        timeout=10,
+        retries=2,
+    )
+    if response is None:
+        return False, (error or "request failed")
+    if response.status_code == 200:
+        return True, None
+    return False, response_error(response, f"Failed to set session to {status}")
+
+
+def _fetch_recent_checkins(*, course_id: str | None, minutes: int = 5, limit: int = 200) -> tuple[list[dict], str | None]:
+    now_utc = datetime.now(timezone.utc)
+    start_utc = now_utc - timedelta(minutes=minutes)
+
+    params: dict[str, object] = {
+        "start_date": start_utc.isoformat().replace("+00:00", "Z"),
+        "end_date": now_utc.isoformat().replace("+00:00", "Z"),
+        "limit": max(1, min(limit, 200)),
+        "offset": 0,
+    }
+    if course_id:
+        params["course_id"] = course_id
+
+    response, error = request_with_retry(
+        "GET",
+        f"{API_BASE_URL}/checkins/",
+        params=params,
+        headers=get_headers(),
+        timeout=12,
+        retries=2,
+    )
+    if response is None:
+        return [], (error or "request failed")
+    if response.status_code != 200:
+        return [], response_error(response, "Could not load live check-ins")
+
+    payload = parse_json(response)
+    if isinstance(payload, dict):
+        items = payload.get("items", [])
+        return (items if isinstance(items, list) else []), None
+    if isinstance(payload, list):
+        return payload, None
+    return [], None
+
+
+def main(embedded: bool = False):
+    if not embedded:
+        require_auth()
     current_role = str((st.session_state.get('user') or {}).get('role', '')).strip().lower()
     if current_role not in {"ta", "instructor", "admin"}:
         st.error("Access denied. This page is restricted to TAs, instructors, and admins.")
         st.stop()
 
-    st.title("Session Monitoring")
-    st.markdown("Monitor sessions and view check-in details.")
-    st.info("For create/edit/status/delete actions, use `Manage` -> `Manage Sessions`.")
-    auto_refresh_seconds = st.sidebar.selectbox("Auto Refresh", [0, 15, 30, 60], index=2)
-    if auto_refresh_seconds > 0:
-        _inject_auto_refresh(auto_refresh_seconds)
-        st.caption(f"Auto-refresh enabled every {auto_refresh_seconds}s")
+    if not embedded:
+        st.title("Session Monitoring")
+        st.markdown("Monitor sessions and view check-in details.")
+        st.info("For create/edit/status/delete actions, use `Manage` -> `Manage Sessions`.")
+    _inject_auto_refresh(AUTO_REFRESH_SECONDS)
+    st.caption(f"Auto-refresh enabled every {AUTO_REFRESH_SECONDS}s")
 
     # Fetch active courses for filter (only show active courses)
     try:
@@ -371,16 +413,78 @@ def main():
             if pending_error:
                 st.warning(f"Could not load pending review queue: {pending_error}")
             elif pending_reviews:
-                pending_col1, pending_col2, pending_col3 = st.columns([2, 1, 1])
+                pending_col1, pending_col2 = st.columns([2, 1])
                 with pending_col1:
                     st.warning(f"{len(pending_reviews)} check-in(s) need review (flagged/appealed).")
                 with pending_col2:
                     if st.button("Open Review Queue", key="open_review_queue_top", use_container_width=True, type="primary"):
                         selected_course_id = None if course_filter == "All" else course_filter
                         _open_review_queue(course_id=selected_course_id)
-                with pending_col3:
-                    if st.button("Review All", key="open_review_queue_all", use_container_width=True):
-                        _open_review_queue()
+
+            # Live pulse for active-session monitoring
+            active_session_ids = {
+                str(s.get("id") or "").strip()
+                for s in sessions
+                if str(s.get("status") or "").lower() == "active" and str(s.get("id") or "").strip()
+            }
+            scoped_course_id = None if course_filter == "All" else str(course_filter)
+            recent_checkins, recent_checkins_error = _fetch_recent_checkins(course_id=scoped_course_id, minutes=5, limit=200)
+            if active_session_ids:
+                recent_checkins = [
+                    ci for ci in recent_checkins
+                    if str((ci or {}).get("session_id") or "").strip() in active_session_ids
+                ]
+
+            status_counts = {"approved": 0, "flagged": 0, "rejected": 0}
+            latest_checkin_dt = None
+            for ci in recent_checkins:
+                status_value = str((ci or {}).get("status") or "").strip().lower()
+                if status_value in status_counts:
+                    status_counts[status_value] += 1
+                ts = parse_iso_utc((ci or {}).get("checked_in_at"))
+                if ts is not None and (latest_checkin_dt is None or ts > latest_checkin_dt):
+                    latest_checkin_dt = ts
+
+            total_live = len(recent_checkins)
+            flagged_or_rejected = status_counts["flagged"] + status_counts["rejected"]
+            flag_rate_pct = (flagged_or_rejected / total_live * 100.0) if total_live else 0.0
+
+            pulse_by_session: dict[str, dict[str, object]] = {}
+            for ci in recent_checkins:
+                sid = str((ci or {}).get("session_id") or "").strip()
+                if not sid:
+                    continue
+                if sid not in pulse_by_session:
+                    pulse_by_session[sid] = {
+                        "total": 0,
+                        "approved": 0,
+                        "flagged": 0,
+                        "rejected": 0,
+                        "latest": None,
+                    }
+                bucket = pulse_by_session[sid]
+                bucket["total"] = int(bucket["total"]) + 1
+                status_value = str((ci or {}).get("status") or "").strip().lower()
+                if status_value in {"approved", "flagged", "rejected"}:
+                    bucket[status_value] = int(bucket[status_value]) + 1
+
+                ts = parse_iso_utc((ci or {}).get("checked_in_at"))
+                if ts is not None:
+                    cur_latest = bucket.get("latest")
+                    if cur_latest is None or ts > cur_latest:
+                        bucket["latest"] = ts
+
+            if scoped_course_id:
+                scoped_pending_reviews = [
+                    item for item in pending_reviews
+                    if str((item or {}).get("course_id") or "").strip() == scoped_course_id
+                ]
+            else:
+                scoped_pending_reviews = pending_reviews
+            review_queue_size = len(scoped_pending_reviews)
+
+            if recent_checkins_error:
+                st.caption(f"Live pulse warning: {recent_checkins_error}")
 
             # Apply status filter
             if status_filter != 'All':
@@ -397,10 +501,11 @@ def main():
 
             # Scheduled Sessions Section
             scheduled_sessions = [s for s in sessions if s.get('status') == 'scheduled']
+            st.subheader(f"Scheduled Sessions ({len(scheduled_sessions)})")
             if scheduled_sessions:
                 sched_col1, sched_col2 = st.columns([3, 1])
                 with sched_col1:
-                    st.subheader(f"Scheduled Sessions ({len(scheduled_sessions)})")
+                    st.caption("Sessions awaiting activation.")
                 with sched_col2:
                     st.markdown("<div style='margin-top:8px'>", unsafe_allow_html=True)
                     if st_keyup is not None:
@@ -446,17 +551,42 @@ def main():
                             with col3:
                                 st.metric("Check-ins", get_checkin_count(session))
 
-                            st.caption("Status changes are managed in `Manage` -> `Manage Sessions`.")
+                            action_col1, action_col2 = st.columns([1, 2])
+                            with action_col1:
+                                can_activate = not course_deleted
+                                if st.button(
+                                    "Activate",
+                                    key=f"activate_scheduled_{session.get('id')}",
+                                    type="primary",
+                                    use_container_width=True,
+                                    disabled=not can_activate,
+                                ):
+                                    ok, err = _update_session_status(str(session.get("id") or ""), "active")
+                                    if ok:
+                                        st.success("Session activated.")
+                                        st.rerun()
+                                    else:
+                                        st.error(err or "Failed to activate session.")
+                            with action_col2:
+                                if course_deleted:
+                                    st.caption("Cannot activate: parent course is deleted.")
+                                else:
+                                    st.caption("Activate to open check-in controls and QR actions in this view.")
+
+                            # Keep card concise in unified statistics view.
 
                 st.markdown("---")
+            else:
+                st.info("No sessions scheduled.")
 
             # Active Sessions Section
             active_sessions = [s for s in sessions if s.get('status') == 'active']
+            st.subheader(f"Active Sessions ({len(active_sessions)})")
             if active_sessions:
                 open_now_sessions = [s for s in active_sessions if is_checkin_window_open(s)]
                 stale_active_sessions = [s for s in active_sessions if not is_checkin_window_open(s)]
 
-                st.subheader(f"Active Sessions ({len(open_now_sessions)} open now / {len(active_sessions)} status-active)")
+                st.caption(f"{len(open_now_sessions)} open now / {len(active_sessions)} status-active")
 
                 if stale_active_sessions:
                     st.warning(
@@ -476,6 +606,30 @@ def main():
                         elif not window_open:
                             st.warning("Check-in window is currently closed for this active session.")
 
+                        session_id_str = str(session.get("id") or "").strip()
+                        session_pulse = pulse_by_session.get(
+                            session_id_str,
+                            {"total": 0, "approved": 0, "flagged": 0, "rejected": 0, "latest": None},
+                        )
+                        session_total = int(session_pulse.get("total", 0) or 0)
+                        session_flagged = int(session_pulse.get("flagged", 0) or 0)
+                        session_rejected = int(session_pulse.get("rejected", 0) or 0)
+                        session_flag_rate = ((session_flagged + session_rejected) / session_total * 100.0) if session_total else 0.0
+                        session_latest = session_pulse.get("latest")
+                        st.markdown("##### Live Pulse (last 5m)")
+                        s_p1, s_p2, s_p3, s_p4, s_p5 = st.columns(5)
+                        s_p1.metric("Check-ins (5m)", session_total)
+                        s_p2.metric(
+                            "Approved / Flagged / Rejected",
+                            f"{int(session_pulse.get('approved', 0) or 0)} / {session_flagged} / {session_rejected}",
+                        )
+                        s_p3.metric("Flag Rate", f"{session_flag_rate:.1f}%")
+                        s_p4.metric(
+                            "Last Check-in (SGT)",
+                            session_latest.strftime("%H:%M:%S") if session_latest is not None else "N/A",
+                        )
+                        s_p5.metric("Review Queue", pending_by_session.get(session_id_str, 0))
+
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.write(f"**Type:** {session.get('session_type', 'N/A')}")
@@ -487,7 +641,7 @@ def main():
                             # Quick stats for this session
                             st.metric("Check-ins", get_checkin_count(session))
 
-                        st.caption("Status changes are managed in `Manage` -> `Manage Sessions`.")
+                        # Keep card concise in unified statistics view.
                         pending_for_session = pending_by_session.get(str(session.get("id") or ""), 0)
                         if pending_for_session > 0:
                             review_col1, review_col2 = st.columns([2, 1])
@@ -524,7 +678,7 @@ def main():
                                     student_name = str(item.get("student_name") or "Unknown Student")
                                     status_value = str(item.get("status") or "flagged")
                                     risk_value = float(item.get("risk_score") or 0.0)
-                                    checked_in_at = item.get("checked_in_at") or item.get("timestamp")
+                                    checked_in_at = format_datetime_local(item.get("checked_in_at") or item.get("timestamp"))
 
                                     st.markdown(
                                         f"**{student_name}** | `{status_value}` | Risk `{risk_value:.2f}` | {checked_in_at or 'N/A'}"
@@ -606,47 +760,49 @@ def main():
                             show_session_checkins(session['id'])
 
                 st.markdown("---")
+            else:
+                st.info("No active sessions.")
 
-            with st.expander("All Sessions Table / Export", expanded=False):
-                display_data = []
-                for s in sessions:
-                    course_deleted = s.get('course_id') not in active_course_ids
-                    course_display = s.get('course_name', s.get('course_code', 'N/A'))
-                    if course_deleted:
-                        course_display = f"{course_display} [DELETED]"
+            st.subheader("All Sessions Table / Export")
+            display_data = []
+            for s in sessions:
+                course_deleted = s.get('course_id') not in active_course_ids
+                course_display = s.get('course_name', s.get('course_code', 'N/A'))
+                if course_deleted:
+                    course_display = f"{course_display} [DELETED]"
 
-                    display_data.append({
-                        'Status': f"{get_status_color(s.get('status', ''))} {s.get('status', 'unknown').title()}",
-                        'Name': s.get('name', 'N/A'),
-                        'Course': course_display,
-                        'Type': s.get('session_type', 'N/A'),
-                        'Scheduled Start': format_datetime_local(s.get('scheduled_start')),
-                        'Check-ins': get_checkin_count(s),
-                        'ID': s.get('id', '')
-                    })
+                display_data.append({
+                    'Status': f"{get_status_color(s.get('status', ''))} {s.get('status', 'unknown').title()}",
+                    'Name': s.get('name', 'N/A'),
+                    'Course': course_display,
+                    'Type': s.get('session_type', 'N/A'),
+                    'Scheduled Start': format_datetime_local(s.get('scheduled_start')),
+                    'Check-ins': get_checkin_count(s),
+                    'ID': s.get('id', '')
+                })
 
-                df = pd.DataFrame(display_data)
-                st.dataframe(df.drop(columns=['ID']), use_container_width=True, hide_index=True)
+            df = pd.DataFrame(display_data)
+            st.dataframe(df.drop(columns=['ID']), use_container_width=True, hide_index=True)
 
-                sessions_csv = df.drop(columns=['ID']).to_csv(index=False)
-                st.download_button(
-                    "Download Sessions CSV",
-                    sessions_csv,
-                    "all_sessions.csv",
-                    "text/csv",
-                    use_container_width=True,
-                    key="csv_export_all_sessions",
-                )
+            sessions_csv = df.drop(columns=['ID']).to_csv(index=False)
+            st.download_button(
+                "Download Sessions CSV",
+                sessions_csv,
+                "all_sessions.csv",
+                "text/csv",
+                use_container_width=True,
+                key="csv_export_all_sessions",
+            )
 
             st.markdown("---")
-            if current_role in {"instructor", "admin"}:
+            if current_role in {"instructor", "admin"} and not embedded:
                 st.caption("Use the `Check-ins` page from the sidebar for global cross-session exploration and exports.")
 
         else:
-            st.error(f"Failed to load sessions ({response.status_code}): {response_error(response)}")
+            st.error(response_error(response, "Couldn't load sessions right now."))
 
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "Couldn't load sessions right now."))
 
 
 def show_session_checkins(session_id):
@@ -660,7 +816,7 @@ def show_session_checkins(session_id):
             retries=2,
         )
         if response is None:
-            st.warning(f"Could not load check-ins: {error or 'request failed'}")
+            st.warning(friendly_error(error, "Couldn't load check-ins right now."))
             return
 
         if response.status_code == 200:
@@ -694,8 +850,6 @@ def show_session_checkins(session_id):
                         'Risk Score': ci.get('risk_score', ''),
                         'Liveness Score': ci.get('liveness_score', ''),
                         'Face Match Score': ci.get('face_match_score', ''),
-                        'Latitude': ci.get('latitude', ''),
-                        'Longitude': ci.get('longitude', ''),
                     })
                 csv_data = pd.DataFrame(export_rows).to_csv(index=False)
                 st.download_button(
@@ -729,21 +883,21 @@ def show_session_checkins(session_id):
                             retries=2,
                         )
                         if detail_response is None:
-                            st.warning(f"Could not load check-in detail: {detail_error or 'request failed'}")
+                            st.warning(friendly_error(detail_error, "Couldn't load check-in details right now."))
                             return
                         if detail_response.status_code == 200:
                             detail = parse_json(detail_response)
                             st.json(detail)
                             # ...existing code...
                         else:
-                            st.warning(f"Could not load check-in detail ({detail_response.status_code}): {response_error(detail_response)}")
+                            st.warning(response_error(detail_response, "Couldn't load check-in details right now."))
             else:
                 st.info("No check-ins yet.")
         else:
             st.warning("Could not load check-ins.")
 
     except Exception as e:
-        st.warning(f"Error loading check-ins: {str(e)}")
+        st.warning(friendly_error(e, "Couldn't load check-ins right now."))
 
 
 def show_session_details(session_id, sessions, active_course_ids=None):
@@ -805,7 +959,7 @@ def show_session_details(session_id, sessions, active_course_ids=None):
             retries=2,
         )
         if stats_response is None:
-            st.warning(f"Could not load session statistics: {stats_error or 'request failed'}")
+            st.warning(friendly_error(stats_error, "Couldn't load session statistics right now."))
             return
 
         if stats_response.status_code == 200:
@@ -826,7 +980,7 @@ def show_session_details(session_id, sessions, active_course_ids=None):
                 st.metric("Flagged", stats.get('flagged_count', 0))
 
     except Exception as e:
-        st.warning(f"Could not load session statistics: {str(e)}")
+        st.warning(friendly_error(e, "Couldn't load session statistics right now."))
 
     # Check-ins Table
     st.markdown("---")
@@ -834,6 +988,4 @@ def show_session_details(session_id, sessions, active_course_ids=None):
     show_session_checkins(session_id)
 
 
-if __name__ == "__main__":
-    main()
 

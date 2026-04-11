@@ -24,20 +24,56 @@ def parse_json(response: requests.Response | None) -> Any:
         return None
 
 
+def friendly_error(error: Any, fallback: str = "Something went wrong. Please try again.") -> str:
+    """Convert technical errors into clear, user-facing messages."""
+    raw = str(error or "").strip()
+    if not raw:
+        return fallback
+
+    text = raw.lower()
+
+    if any(token in text for token in ("timed out", "timeout", "connection error", "connection refused", "failed to connect", "max retries exceeded", "name or service not known")):
+        return "We couldn't reach the service. Please try again in a moment."
+
+    if any(token in text for token in ("database operation failed", "database", "prisma", "sql", "foreign key")):
+        return "We couldn't save your request right now. Please try again."
+
+    if any(token in text for token in ("duplicate", "already exists", "unique constraint", "unique failed")):
+        return "This record already exists. Try a different name or value."
+
+    if any(token in text for token in ("unauthorized", "forbidden", "invalid token", "token expired", "access denied")):
+        return "Your session has expired or you do not have permission for this action."
+
+    if any(token in text for token in ("bad request", "validation", "unprocessable", "invalid input", "invalid payload")):
+        return "Some fields look invalid. Please review and try again."
+
+    if any(token in text for token in ("not found", "does not exist")):
+        return "We couldn't find the requested record. Please refresh and try again."
+
+    if any(token in text for token in ("internal server error", "error 500")):
+        return "The server ran into an issue. Please try again shortly."
+
+    # Preserve short, already-human messages.
+    if len(raw) <= 90 and "error" not in text:
+        return raw
+
+    return fallback
+
+
 def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
     if response is None:
-        return "Connection error"
+        return friendly_error("connection error", fallback=fallback)
 
     payload = parse_json(response)
     if isinstance(payload, dict):
         detail = payload.get("detail") or payload.get("message") or payload.get("error")
         if detail:
-            return str(detail)
+            return friendly_error(detail, fallback=fallback)
 
     text = (response.text or "").strip()
     if text:
-        return text[:250]
-    return fallback
+        return friendly_error(text[:250], fallback=fallback)
+    return friendly_error(fallback, fallback=fallback)
 
 
 def request_with_retry(

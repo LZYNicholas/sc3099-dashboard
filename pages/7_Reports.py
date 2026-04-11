@@ -5,12 +5,14 @@ import streamlit as st
 import requests
 import pandas as pd
 import json
-from datetime import datetime
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import extract_items, fetch_all_items, request_with_retry, response_error
+from lib.response_utils import extract_items, fetch_all_items, request_with_retry, response_error, friendly_error
+from lib.time_utils import format_sgt, now_sgt, to_utc_iso_range_end, to_utc_iso_range_start
+from lib.ui_theme import apply_theme
 
 # Page configuration
 st.set_page_config(page_title="Reports - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
+apply_theme()
 
 def get_headers():
     return get_auth_headers()
@@ -114,7 +116,7 @@ def _build_checkin_export_df(
             "Check-in ID": ci.get("id"),
             "Student ID": ci.get("student_id"),
             "Session ID": ci.get("session_id"),
-            "Timestamp": ci.get("checked_in_at"),
+            "Timestamp": format_sgt(ci.get("checked_in_at"), "%Y-%m-%d %H:%M SGT"),
             "Verification Status": ci.get("status"),
         }
         if include_details:
@@ -226,10 +228,8 @@ def course_reports():
                     try:
                         params = {"format": export_format}
                         if use_date_range:
-                            params["start_date"] = pd.Timestamp(start_date).tz_localize("UTC").isoformat()
-                            params["end_date"] = pd.Timestamp(end_date).tz_localize("UTC").replace(
-                                hour=23, minute=59, second=59
-                            ).isoformat()
+                            params["start_date"] = to_utc_iso_range_start(start_date)
+                            params["end_date"] = to_utc_iso_range_end(end_date)
 
                         response, error = request_with_retry(
                             "GET",
@@ -240,17 +240,17 @@ def course_reports():
                             retries=2,
                         )
                         if response is None:
-                            st.error(f"Failed to generate report: {error or 'request failed'}")
+                            st.error(friendly_error(error, "Couldn't generate the report right now."))
                             return
                         if response.status_code != 200:
-                            st.error(f"Failed to generate report ({response.status_code}): {response_error(response)}")
+                            st.error(response_error(response, "Couldn't generate the report right now."))
                             return
 
                         if not response.content:
                             st.warning("No records found for the selected course/date range.")
                         else:
                             course_name = course_options[selected_course].replace(' ', '_').replace('-', '_')
-                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            timestamp = now_sgt().strftime('%Y%m%d_%H%M%S')
                             _offer_download(
                                 response,
                                 export_format,
@@ -259,13 +259,13 @@ def course_reports():
                             )
 
                     except Exception as e:
-                        st.error(f"Error generating report: {str(e)}")
+                        st.error(friendly_error(e, "Couldn't generate the report right now."))
 
         else:
             st.error("Failed to load courses.")
 
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "Couldn't load reports right now."))
 
 
 def session_reports():
@@ -302,7 +302,7 @@ def session_reports():
                 retries=2,
             )
             if sessions_response is None:
-                st.error(f"Failed to load sessions: {sessions_error or 'request failed'}")
+                st.error(friendly_error(sessions_error, "Couldn't load sessions right now."))
                 return
             sessions = extract_items(sessions_response.json()) if sessions_response.status_code == 200 else []
 
@@ -347,16 +347,16 @@ def session_reports():
                             retries=2,
                         )
                         if export_resp is None:
-                            st.error(f"Failed to generate session report: {export_error or 'request failed'}")
+                            st.error(friendly_error(export_error, "Couldn't generate the session report right now."))
                             return
                         if export_resp.status_code != 200:
-                            st.error(f"Failed to generate report ({export_resp.status_code}): {response_error(export_resp)}")
+                            st.error(response_error(export_resp, "Couldn't generate the report right now."))
                             return
                         if not export_resp.content:
                             st.warning("No check-ins found for this session.")
                         else:
                             session_name = session_options[selected_session].split('(')[0].strip().replace(' ', '_')
-                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            timestamp = now_sgt().strftime('%Y%m%d_%H%M%S')
                             _offer_download(
                                 export_resp,
                                 export_format,
@@ -365,13 +365,13 @@ def session_reports():
                             )
 
                     except Exception as e:
-                        st.error(f"Error generating report: {str(e)}")
+                        st.error(friendly_error(e, "Couldn't generate the report right now."))
 
         else:
             st.error("Failed to load courses.")
 
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "Couldn't load reports right now."))
 
 
 def custom_reports():
@@ -395,11 +395,16 @@ def custom_reports():
 
     with col1:
         st.markdown("#### Filters")
+        use_date_range = st.checkbox(
+            "Filter by date range",
+            value=False,
+            key="custom_use_dates"
+        )
         date_col1, date_col2 = st.columns(2)
         with date_col1:
-            start_date = st.date_input("Start Date", key="custom_start")
+            start_date = st.date_input("Start Date", key="custom_start", disabled=not use_date_range)
         with date_col2:
-            end_date = st.date_input("End Date", key="custom_end")
+            end_date = st.date_input("End Date", key="custom_end", disabled=not use_date_range)
 
         try:
             raw_courses = _load_all_courses()
@@ -433,14 +438,14 @@ def custom_reports():
         if report_type == 'attendance_summary':
             fields = st.multiselect(
                 "Include Fields",
-                options=['date', 'course', 'session', 'total_records', 'approved', 'flagged', 'rejected', 'attendance_rate'],
-                default=['date', 'course', 'session', 'total_records', 'attendance_rate']
+                options=['date', 'course', 'session', 'total_attempts', 'expected_enrolled', 'approved', 'flagged', 'rejected', 'attendance_rate'],
+                default=['date', 'course', 'session', 'total_attempts', 'expected_enrolled', 'attendance_rate']
             )
         elif report_type == 'student_performance':
             fields = st.multiselect(
                 "Include Fields",
-                options=['student_name', 'student_email', 'course_code', 'total_checkins', 'approved', 'flagged', 'rejected', 'attendance_rate', 'avg_risk_score'],
-                default=['student_name', 'student_email', 'total_checkins', 'attendance_rate']
+                options=['student_name', 'student_email', 'course_code', 'total_attempts', 'expected_sessions', 'approved', 'flagged', 'rejected', 'attendance_rate', 'avg_risk_score'],
+                default=['student_name', 'student_email', 'total_attempts', 'expected_sessions', 'attendance_rate']
             )
         elif report_type == 'risk_analysis':
             fields = st.multiselect(
@@ -470,8 +475,11 @@ def custom_reports():
         course_ids = [] if "All" in selected_courses else selected_courses
         query_courses = course_ids or [None]
         rows: list[dict] = []
-        start_iso = pd.Timestamp(start_date).tz_localize("UTC").isoformat() if start_date else None
-        end_iso = pd.Timestamp(end_date).tz_localize("UTC").replace(hour=23, minute=59, second=59).isoformat() if end_date else None
+        start_iso = None
+        end_iso = None
+        if use_date_range:
+            start_iso = to_utc_iso_range_start(start_date)
+            end_iso = to_utc_iso_range_end(end_date)
 
         for course_id in query_courses:
             params: dict[str, object] = {"limit": 200, "offset": 0}
@@ -540,6 +548,57 @@ def custom_reports():
             return json.dumps(value)
         return str(value)
 
+    enrolled_count_cache: dict[str, int] = {}
+    total_sessions_cache: dict[str, int] = {}
+
+    def _course_enrolled_count(course_id: object) -> int:
+        course_id_str = str(course_id or "").strip()
+        if not course_id_str:
+            return 0
+        if course_id_str in enrolled_count_cache:
+            return enrolled_count_cache[course_id_str]
+        try:
+            resp = requests.get(
+                f"{API_BASE_URL}/enrollments/course/{course_id_str}",
+                headers=get_headers(),
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                enrolled_count_cache[course_id_str] = 0
+                return 0
+            payload = resp.json()
+            if isinstance(payload, dict):
+                if isinstance(payload.get("total_enrolled"), int):
+                    enrolled_count_cache[course_id_str] = int(payload.get("total_enrolled") or 0)
+                    return enrolled_count_cache[course_id_str]
+                students = payload.get("students", [])
+                enrolled_count_cache[course_id_str] = len(students) if isinstance(students, list) else 0
+                return enrolled_count_cache[course_id_str]
+        except Exception:
+            pass
+        enrolled_count_cache[course_id_str] = 0
+        return 0
+
+    def _course_total_sessions(course_id: object) -> int:
+        course_id_str = str(course_id or "").strip()
+        if not course_id_str:
+            return 0
+        if course_id_str in total_sessions_cache:
+            return total_sessions_cache[course_id_str]
+        try:
+            sessions = fetch_all_items(
+                f"{API_BASE_URL}/sessions/",
+                headers=get_headers(),
+                params={"course_id": course_id_str},
+                timeout=15,
+                page_size=200,
+            )
+            total_sessions_cache[course_id_str] = len(sessions) if isinstance(sessions, list) else 0
+            return total_sessions_cache[course_id_str]
+        except Exception:
+            total_sessions_cache[course_id_str] = 0
+            return 0
+
     if st.button("Generate Custom Report", use_container_width=True, key="gen_custom_report"):
         with st.spinner("Generating custom report..."):
             records: list[dict] = []
@@ -551,9 +610,9 @@ def custom_reports():
                 if report_type == "attendance_summary":
                     if checkins:
                         df = pd.DataFrame(checkins)
-                        df["date"] = pd.to_datetime(df.get("checked_in_at"), errors="coerce").dt.date.astype(str)
+                        df["date"] = pd.to_datetime(df.get("checked_in_at"), errors="coerce", utc=True).dt.tz_convert("Asia/Singapore").dt.date.astype(str)
                         grouped = (
-                            df.groupby(["date", "course_code", "session_name"], dropna=False)
+                            df.groupby(["date", "course_id", "course_code", "session_name"], dropna=False)
                             .agg(
                                 total_records=("id", "count"),
                                 approved=("status", lambda x: int((x == "approved").sum())),
@@ -562,8 +621,16 @@ def custom_reports():
                             )
                             .reset_index()
                         )
+                        grouped["enrolled"] = grouped["course_id"].apply(_course_enrolled_count)
                         grouped["attendance_rate"] = grouped.apply(
-                            lambda r: (r["approved"] / r["total_records"]) if r["total_records"] else 0, axis=1
+                            lambda r: (r["approved"] / r["enrolled"]) if r["enrolled"] else 0, axis=1
+                        )
+                        grouped.rename(
+                            columns={
+                                "total_records": "total_attempts",
+                                "enrolled": "expected_enrolled",
+                            },
+                            inplace=True,
                         )
                         grouped.rename(columns={"course_code": "course", "session_name": "session"}, inplace=True)
                         records = grouped.to_dict("records")
@@ -571,7 +638,7 @@ def custom_reports():
                     if checkins:
                         df = pd.DataFrame(checkins)
                         grouped = (
-                            df.groupby(["student_name", "student_email", "course_code"], dropna=False)
+                            df.groupby(["student_name", "student_email", "course_id", "course_code"], dropna=False)
                             .agg(
                                 total_checkins=("id", "count"),
                                 approved=("status", lambda x: int((x == "approved").sum())),
@@ -581,8 +648,16 @@ def custom_reports():
                             )
                             .reset_index()
                         )
+                        grouped["total_sessions"] = grouped["course_id"].apply(_course_total_sessions)
                         grouped["attendance_rate"] = grouped.apply(
-                            lambda r: (r["approved"] / r["total_checkins"]) if r["total_checkins"] else 0, axis=1
+                            lambda r: (r["approved"] / r["total_sessions"]) if r["total_sessions"] else 0, axis=1
+                        )
+                        grouped.rename(
+                            columns={
+                                "total_checkins": "total_attempts",
+                                "total_sessions": "expected_sessions",
+                            },
+                            inplace=True,
                         )
                         records = grouped.to_dict("records")
                 else:
@@ -593,7 +668,7 @@ def custom_reports():
                                 "student_email": row.get("student_email"),
                                 "course_code": row.get("course_code"),
                                 "session_name": row.get("session_name"),
-                                "timestamp": row.get("checked_in_at"),
+                                "timestamp": format_sgt(row.get("checked_in_at"), "%Y-%m-%d %H:%M SGT"),
                                 "status": row.get("status"),
                                 "risk_score": row.get("risk_score"),
                                 "liveness_score": row.get("liveness_score"),
@@ -626,7 +701,7 @@ def custom_reports():
             st.download_button(
                 f"Download {export_format.upper()}",
                 payload,
-                f"custom_report_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{export_format}",
+                f"custom_report_{report_type}_{now_sgt().strftime('%Y%m%d_%H%M%S')}.{export_format}",
                 mime,
                 use_container_width=True,
             )

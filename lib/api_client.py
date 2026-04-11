@@ -4,6 +4,7 @@ API Client for SAIV Backend
 import requests
 from typing import Dict, Any, Tuple, Optional
 import os
+from lib.response_utils import friendly_error
 
 class APIClient:
     """Client for interacting with SAIV backend API"""
@@ -59,7 +60,7 @@ class APIClient:
                 self.token = result.get('access_token')
             return success, result
         except Exception as e:
-            return False, f"Connection error: {str(e)}"
+            return False, friendly_error(e, "We couldn't connect right now. Please try again.")
 
     # Statistics
     def get_overview_statistics(self, days: int = 7) -> Tuple[bool, Any]:

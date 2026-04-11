@@ -2,16 +2,19 @@
 """
 
 import json
-from datetime import date, datetime, time, timezone
+from datetime import date
 
 import pandas as pd
 import streamlit as st
 
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import fetch_all_items, parse_json, request_with_retry, response_error
+from lib.response_utils import fetch_all_items, parse_json, request_with_retry, response_error, friendly_error
+from lib.time_utils import format_sgt, now_sgt, to_utc_iso_range_end, to_utc_iso_range_start
+from lib.ui_theme import apply_theme
 
 
 st.set_page_config(page_title="Check-ins - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
+apply_theme()
 
 
 def get_headers():
@@ -41,15 +44,11 @@ def _stringify(value) -> str:
 
 
 def _iso_range_start(d: date | None) -> str | None:
-    if d is None:
-        return None
-    return datetime.combine(d, time.min, tzinfo=timezone.utc).isoformat()
+    return to_utc_iso_range_start(d)
 
 
 def _iso_range_end(d: date | None) -> str | None:
-    if d is None:
-        return None
-    return datetime.combine(d, time.max, tzinfo=timezone.utc).isoformat()
+    return to_utc_iso_range_end(d)
 
 
 def _safe_avg_risk(items: list[dict]) -> float:
@@ -66,7 +65,7 @@ def _open_review_queue(*, checkin_id: str | None = None, session_id: str | None 
     st.session_state["review_queue_session_id"] = session_id or ""
     st.session_state["review_queue_course_id"] = course_id or ""
     try:
-        st.switch_page("pages/10_Review_Appeals.py")
+        st.switch_page("pages/6_Reveal_Appeals.py")
     except Exception:
         st.info("Open `Review Appeals` from the sidebar to continue.")
 
@@ -101,10 +100,10 @@ def main() -> None:
         retries=2,
     )
     if response is None:
-        st.error(f"Failed to load sessions: {error or 'request failed'}")
+        st.error(friendly_error(error, "Couldn't load sessions right now."))
         return
     if response.status_code != 200:
-        st.error(f"Failed to load sessions ({response.status_code}): {response_error(response)}")
+        st.error(response_error(response, "Couldn't load sessions right now."))
         return
 
     payload = parse_json(response)
@@ -112,16 +111,27 @@ def main() -> None:
     sessions = sessions if isinstance(sessions, list) else []
 
     course_options = {"All": "All Courses"}
+    course_lookup: dict[str, dict] = {}
     for course in courses:
         course_id = course.get("id")
         if isinstance(course_id, str):
+            course_lookup[course_id] = course
             course_options[course_id] = f"{course.get('code', 'N/A')} - {course.get('name', 'Unnamed')}"
 
     sessions_by_course: dict[str, list[dict]] = {}
+    session_labels: dict[str, str] = {}
     for s in sessions:
         cid = s.get("course_id")
         if isinstance(cid, str):
             sessions_by_course.setdefault(cid, []).append(s)
+        sid = s.get("id")
+        if isinstance(sid, str):
+            session_name = str(s.get("name") or "Unnamed Session")
+            status = str(s.get("status") or "unknown").lower()
+            course_code = "N/A"
+            if isinstance(cid, str):
+                course_code = str((course_lookup.get(cid) or {}).get("code") or "N/A")
+            session_labels[sid] = f"{session_name} ({course_code} | {status} | {sid[:8]})"
 
     f1, f2, f3, f4 = st.columns(4)
     with f1:
@@ -147,13 +157,13 @@ def main() -> None:
         selected_session = st.selectbox(
             "Session",
             options=session_options,
-            format_func=lambda x: "All Sessions" if x == "All" else x,
+            format_func=lambda x: "All Sessions" if x == "All" else session_labels.get(x, x),
             key="global_checkins_filter_session",
         )
     with f3:
         selected_status = st.selectbox(
             "Status",
-            options=["All", "pending", "approved", "flagged", "rejected", "appealed"],
+            options=["All", "approved", "flagged", "rejected", "appealed"],
             key="global_checkins_filter_status",
         )
     with f4:
@@ -210,10 +220,10 @@ def main() -> None:
         retries=2,
     )
     if checkins_response is None:
-        st.error(f"Failed to load check-ins: {checkins_error or 'request failed'}")
+        st.error(friendly_error(checkins_error, "Couldn't load check-ins right now."))
         return
     if checkins_response.status_code != 200:
-        st.error(f"Failed to load check-ins ({checkins_response.status_code}): {response_error(checkins_response)}")
+        st.error(response_error(checkins_response, "Couldn't load check-ins right now."))
         return
 
     checkins_payload = parse_json(checkins_response) or {}
@@ -246,7 +256,7 @@ def main() -> None:
                 "Course Code": row.get("course_code"),
                 "Session ID": row.get("session_id"),
                 "Session Name": row.get("session_name"),
-                "Checked In At": row.get("checked_in_at"),
+                "Checked In At": format_sgt(row.get("checked_in_at")),
                 "Status": row.get("status"),
                 "Risk Score": row.get("risk_score"),
                 "Liveness Passed": row.get("liveness_passed"),
@@ -258,7 +268,7 @@ def main() -> None:
                 "Risk Factors": _stringify(row.get("risk_factors")),
                 "Risk Signals": _stringify(row.get("risk_signals")),
                 "Appeal Reason": row.get("appeal_reason"),
-                "Appealed At": row.get("appealed_at"),
+                "Appealed At": format_sgt(row.get("appealed_at")),
             }
         )
 
@@ -280,7 +290,7 @@ def main() -> None:
         st.download_button(
             "Download CSV",
             data=df.to_csv(index=False),
-            file_name=f"checkins_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            file_name=f"checkins_export_{now_sgt().strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv",
             use_container_width=True,
             key="global_checkins_export_csv",
@@ -289,7 +299,7 @@ def main() -> None:
         st.download_button(
             "Download JSON",
             data=df.to_json(orient="records", indent=2),
-            file_name=f"checkins_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            file_name=f"checkins_export_{now_sgt().strftime('%Y%m%d_%H%M%S')}.json",
             mime="application/json",
             use_container_width=True,
             key="global_checkins_export_json",

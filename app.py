@@ -14,7 +14,9 @@ from lib.auth_state import (
     initialize_auth_state,
     save_auth_state,
 )
-from lib.response_utils import request_with_retry, response_error, parse_json
+from lib.ui_theme import apply_theme
+from lib.ui_components import add_component_css, hero, section_header
+from lib.response_utils import request_with_retry, response_error, parse_json, friendly_error
 
 _METRICS_STARTED = False
 
@@ -45,14 +47,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+apply_theme()
+add_component_css()
 
-# Custom CSS
 st.markdown("""
 <style>
     .main-header {
         font-size: 2.5rem;
         font-weight: bold;
-        color: #1f77b4;
+        color: #0f6fb2;
         margin-bottom: 1rem;
     }
     .stButton>button {
@@ -62,6 +65,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 initialize_auth_state()
+
+def normalize_invalid_path() -> None:
+    """Recover from stale '/undefined' route that can blank the app."""
+    components.html(
+        """
+        <script>
+        (function () {
+          try {
+            const path = window.parent.location.pathname || "";
+            if (path === "/undefined") {
+              window.parent.history.replaceState({}, "", "/");
+              window.parent.location.reload();
+            }
+          } catch (e) {
+            // no-op
+          }
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def ensure_metrics_server() -> None:
@@ -94,7 +119,7 @@ def login(email: str, password: str) -> bool:
         )
         if response is None:
             LOGIN_FAILURE.inc()
-            st.error(f"Connection error: {error or 'request failed'}")
+            st.error(friendly_error(error, "We couldn't connect right now. Please try again."))
             return False
 
         API_LATENCY.labels(endpoint='/auth/login').observe(time.perf_counter() - started)
@@ -123,11 +148,11 @@ def login(email: str, password: str) -> bool:
             return True
         else:
             LOGIN_FAILURE.inc()
-            st.error(f"Login failed: {response_error(response, 'Login failed')}")
+            st.error(f"Login failed: {response_error(response, 'Unable to sign in right now.')}")
             return False
     except Exception as e:
         LOGIN_FAILURE.inc()
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "We couldn't connect right now. Please try again."))
         return False
 
 
@@ -186,75 +211,66 @@ def inject_login_autofill_hints() -> None:
 def login_page():
     """Display login page"""
     inject_login_autofill_hints()
-    st.markdown('<div class="main-header">SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
+    hero(
+        "SAIV Dashboard",
+        "Attendance operations, risk reviews, and reporting in one workspace.",
+        eyebrow="Secure Access",
+    )
 
-    col1, col2, col3 = st.columns([1, 2, 1])
+    tab1, tab2 = st.tabs(["Sign In", "Create Account"])
 
-    with col2:
-        tab1, tab2 = st.tabs(["Login", "Register"])
-        
-        with tab1:
-            st.markdown("Please login with your instructor credentials.")
-            with st.form("login_form"):
-                email = st.text_input(
-                    "Email",
-                    placeholder="instructor@example.com",
-                    autocomplete="email"
-                )
-                password = st.text_input(
-                    "Password",
-                    type="password",
-                    autocomplete="current-password"
-                )
-                submit = st.form_submit_button("Login", use_container_width=True)
+    with tab1:
+        section_header("Sign In", "Use your instructor, TA, or admin account.")
+        with st.form("login_form"):
+            email = st.text_input("Email", placeholder="instructor@example.com", autocomplete="email")
+            password = st.text_input("Password", type="password", autocomplete="current-password")
+            submit = st.form_submit_button("Login", use_container_width=True)
 
-                if submit:
-                    if email and password:
-                        with st.spinner("Authenticating..."):
-                            if login(email, password):
-                                st.success("Login successful!")
-                                st.rerun()
-                    else:
-                        st.warning("Please enter both email and password.")
+            if submit:
+                if email and password:
+                    with st.spinner("Authenticating..."):
+                        if login(email, password):
+                            st.success("Login successful!")
+                            st.rerun()
+                else:
+                    st.warning("Please enter both email and password.")
 
-        with tab2:
-            st.markdown("Register for a new dashboard account.")
-            with st.form("register_form"):
-                new_name = st.text_input("Full Name")
-                new_email = st.text_input("Email", placeholder="instructor@example.com")
-                new_password = st.text_input("Password", type="password")
-                new_role = st.selectbox("Role", ["instructor", "admin", "ta"])
-                submit_register = st.form_submit_button("Register", use_container_width=True)
-                
-                if submit_register:
-                    if not (new_name and new_email and new_password):
-                        st.warning("Please fill in all fields.")
-                    else:
-                        with st.spinner("Creating account..."):
-                            try:
-                                res, error = request_with_retry(
-                                    "POST",
-                                    f"{API_BASE_URL}/auth/register",
-                                    json={
-                                        "email": new_email,
-                                        "password": new_password,
-                                        "full_name": new_name,
-                                        "role": new_role
-                                    },
-                                    timeout=10,
-                                    retries=2,
-                                )
-                                if res is None:
-                                    st.error(f"Connection error: {error or 'request failed'}")
-                                    return
+    with tab2:
+        section_header("Register", "Create a dashboard account with role-based access.")
+        with st.form("register_form"):
+            new_name = st.text_input("Full Name")
+            new_email = st.text_input("Email", placeholder="instructor@example.com")
+            new_password = st.text_input("Password", type="password")
+            new_role = st.selectbox("Role", ["instructor", "admin", "ta"])
+            submit_register = st.form_submit_button("Register", use_container_width=True)
 
-                                if res.status_code == 201:
-                                    st.success(f"Account for {new_email} created successfully! You can now login.")
-                                else:
-                                    st.error(f"Registration failed: {response_error(res)}")
-                            except Exception as e:
-                                st.error(f"Connection error: {e}")
-
+            if submit_register:
+                if not (new_name and new_email and new_password):
+                    st.warning("Please fill in all fields.")
+                else:
+                    with st.spinner("Creating account..."):
+                        try:
+                            res, error = request_with_retry(
+                                "POST",
+                                f"{API_BASE_URL}/auth/register",
+                                json={
+                                    "email": new_email,
+                                    "password": new_password,
+                                    "full_name": new_name,
+                                    "role": new_role,
+                                },
+                                timeout=10,
+                                retries=2,
+                            )
+                            if res is None:
+                                st.error(friendly_error(error, "We couldn't connect right now. Please try again."))
+                                return
+                            if res.status_code == 201:
+                                st.success(f"Account for {new_email} created successfully! You can now login.")
+                            else:
+                                st.error(f"Registration failed: {response_error(res, 'Unable to create account right now.')}")
+                        except Exception as e:
+                            st.error(friendly_error(e, "We couldn't connect right now. Please try again."))
 
 def main_page():
     """Display main dashboard"""
@@ -272,35 +288,48 @@ def main_page():
             logout()
             st.rerun()
 
-    # Main content
-    st.markdown('<div class="main-header">SAIV Instructor Dashboard</div>', unsafe_allow_html=True)
+    hero(
+        f"Welcome back, {user.get('full_name', 'User')}",
+        "Choose a workflow below to jump straight into operations.",
+        eyebrow="Dashboard Home",
+    )
 
-    st.markdown("""
-    ### Welcome to the Instructor Dashboard
+    c1, c2, c3 = st.columns(3, gap="small")
+    with c1:
+        if st.button("Manage Courses", use_container_width=True, key="home_manage"):
+            st.switch_page("pages/2_Manage_Course_Session_Enrollments_Devices.py")
+    with c2:
+        if st.button("Review Appeals", use_container_width=True, key="home_review"):
+            st.switch_page("pages/6_Reveal_Appeals.py")
+    with c3:
+        if st.button("Generate Reports", use_container_width=True, key="home_reports"):
+            st.switch_page("pages/7_Reports.py")
 
-    Use the sidebar to navigate between pages:
-
-    - **Overview** - View system statistics
-    - **Courses** - Course analytics
-    - **Sessions** - Monitor sessions and check-ins
-    - **Audit Logs** - View audit trail
-    - **Reports** - Export data
-    - **Manage** - Create courses and sessions
-    - **Review Appeals** - Review flagged & appealed check-ins
-
-    ### Quick Start
-
-    1. Go to **Manage** to create a course
-    2. Create a session within that course
-    3. Enroll students in the course
-    4. Set the session to **Active** to allow check-ins
-    5. Students can now check in via the frontend at http://localhost:3000
-    6. Review any **flagged or appealed** check-ins in the Review Appeals page
-    """)
+    d1, d2 = st.columns(2, gap="medium")
+    with d1:
+        st.markdown(
+            """
+            <div class="ui-card">
+              <h4>Operational Control</h4>
+              <p>Create courses and sessions, manage attendance windows, and keep class operations running smoothly.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with d2:
+        st.markdown(
+            """
+            <div class="ui-card">
+              <h4>Risk & Compliance</h4>
+              <p>Track risk indicators, resolve flagged submissions, and export evidence-ready attendance reports.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # Quick stats
     st.markdown("---")
-    st.subheader("Quick Stats")
+    section_header("Live Snapshot", "Current platform summary for your scope.")
 
     try:
         headers = get_auth_headers()
@@ -312,7 +341,7 @@ def main_page():
             retries=2,
         )
         if response is None:
-            st.warning(f"Could not load statistics: {error or 'request failed'}")
+            st.warning(friendly_error(error, "Couldn't load statistics right now."))
             return
 
         if response.status_code == 200:
@@ -330,22 +359,23 @@ def main_page():
                 st.metric("Avg Attendance", f"{rate:.1f}%")
             with col5:
                 flagged = stats.get('flagged_pending_review', 0)
-                st.metric("⚠️ Pending Review", flagged)
+                st.metric("Pending Review", flagged)
         else:
             st.info("Statistics will appear once you have courses and sessions.")
     except Exception as e:
-        st.warning(f"Could not load statistics: {str(e)}")
-
+        st.warning(friendly_error(e, "Couldn't load statistics right now."))
 
 def main():
     """Main entry point"""
+    normalize_invalid_path()
     ensure_metrics_server()
 
     if not st.session_state.authenticated:
         login_page()
     else:
-        main_page()
+        st.switch_page("pages/1_Overview.py")
 
 
 if __name__ == "__main__":
     main()
+

@@ -6,9 +6,13 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
+from lib.response_utils import friendly_error
+from lib.time_utils import format_sgt
+from lib.ui_theme import apply_theme
 
 # Page configuration
 st.set_page_config(page_title="Audit Logs - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
+apply_theme()
 
 
 def get_headers():
@@ -175,8 +179,7 @@ def main():
                 timestamp = log.get('timestamp', '')
                 if timestamp:
                     try:
-                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                        timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        timestamp = format_sgt(timestamp, "%Y-%m-%d %H:%M:%S SGT")
                     except:
                         pass
 
@@ -286,10 +289,10 @@ def main():
         elif response.status_code == 403:
             st.error("You don't have permission to view audit logs.")
         else:
-            st.error(f"Failed to load audit logs. Status: {response.status_code}")
+            st.error("Couldn't load audit logs right now. Please try again.")
 
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "Couldn't load audit logs right now."))
         st.info("Make sure the backend server is running.")
 
 

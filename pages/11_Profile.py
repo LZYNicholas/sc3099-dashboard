@@ -4,9 +4,11 @@
 import streamlit as st
 
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import parse_json, request_with_retry, response_error
+from lib.response_utils import parse_json, request_with_retry, response_error, friendly_error
+from lib.ui_theme import apply_theme
 
 st.set_page_config(page_title="Profile - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
+apply_theme()
 
 
 def main() -> None:
@@ -28,10 +30,10 @@ def main() -> None:
         retries=2,
     )
     if response is None:
-        st.error(f"Failed to load profile: {error or 'request failed'}")
+        st.error(friendly_error(error, "Couldn't load your profile right now."))
         return
     if response.status_code != 200:
-        st.error(f"Failed to load profile ({response.status_code}): {response_error(response)}")
+        st.error(response_error(response, "Couldn't load your profile right now."))
         return
 
     me = parse_json(response) if response is not None else {}
@@ -61,10 +63,10 @@ def main() -> None:
                 retries=2,
             )
             if update_response is None:
-                st.error(f"Failed to update profile: {update_error or 'request failed'}")
+                st.error(friendly_error(update_error, "Couldn't update your profile right now."))
                 return
             if update_response.status_code != 200:
-                st.error(f"Failed to update profile ({update_response.status_code}): {response_error(update_response)}")
+                st.error(response_error(update_response, "Couldn't update your profile right now."))
                 return
 
             updated = parse_json(update_response)

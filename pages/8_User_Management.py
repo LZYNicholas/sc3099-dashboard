@@ -5,9 +5,11 @@ import streamlit as st
 import requests
 import pandas as pd
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import extract_items
+from lib.response_utils import extract_items, response_error as shared_response_error, friendly_error
+from lib.ui_theme import apply_theme
 
 st.set_page_config(page_title="User Management - SAIV Dashboard", layout="wide", initial_sidebar_state="expanded")
+apply_theme()
 
 
 def get_headers():
@@ -15,18 +17,7 @@ def get_headers():
 
 
 def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
-    if response is None:
-        return "Connection error"
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-    if isinstance(payload, dict):
-        detail = payload.get("detail") or payload.get("message") or payload.get("error")
-        if detail:
-            return str(detail)
-    text = (response.text or "").strip() if hasattr(response, "text") else ""
-    return text or fallback
+    return shared_response_error(response, fallback)
 
 
 def fetch_all_users(page_size: int = 100) -> tuple[list[dict], str | None]:
@@ -267,7 +258,7 @@ def main():
             st.info("No users match the current filters.")
 
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "Couldn't load users right now."))
 
 
 if __name__ == "__main__":

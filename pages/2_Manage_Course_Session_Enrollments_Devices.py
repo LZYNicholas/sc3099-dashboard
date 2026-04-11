@@ -3,14 +3,18 @@ Create and manage courses and sessions for attendance
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from lib.auth_state import API_BASE_URL, get_auth_headers, require_auth
-from lib.response_utils import bool_query, extract_items
+from lib.response_utils import bool_query, extract_items, response_error as shared_response_error, friendly_error
+from lib.ui_theme import apply_theme
 
 # Page configuration
 st.set_page_config(page_title="Manage - SAIV", layout="wide", initial_sidebar_state="expanded")
+apply_theme()
 
 require_auth()
 
@@ -47,7 +51,7 @@ def api_post(endpoint: str, data: dict):
         clear_api_cache()
         return response
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
         return None
 
 def api_get(endpoint: str, params: dict = None):
@@ -78,7 +82,7 @@ def api_get(endpoint: str, params: dict = None):
         _API_GET_CACHE[cache_key] = response
         return response
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
         if cache_key is not None:
             _API_GET_CACHE[cache_key] = None
         return None
@@ -203,7 +207,7 @@ def api_patch(endpoint: str, data: dict):
         clear_api_cache()
         return response
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
         return None
 
 def api_put(endpoint: str, data: dict):
@@ -218,7 +222,7 @@ def api_put(endpoint: str, data: dict):
         clear_api_cache()
         return response
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
         return None
 
 
@@ -237,7 +241,7 @@ def api_delete(endpoint: str):
         clear_api_cache()
         return response
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
         return None
 
 
@@ -249,31 +253,7 @@ def response_items(response: requests.Response):
 
 
 def response_error(response: requests.Response | None, fallback: str = "Unknown error") -> str:
-    if response is None:
-        return "Connection error"
-
-    try:
-        payload = response.json()
-        if isinstance(payload, dict):
-            for key in ("detail", "message", "error"):
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-
-            detail = payload.get("detail")
-            if isinstance(detail, list) and detail:
-                first = detail[0]
-                if isinstance(first, dict):
-                    msg = first.get("msg")
-                    if isinstance(msg, str) and msg.strip():
-                        return msg
-    except Exception:
-        pass
-
-    text = (response.text or "").strip()
-    if text:
-        return text
-    return fallback
+    return shared_response_error(response, fallback)
 
 
 def fetch_active_instructors() -> tuple[list[dict], str | None]:
@@ -323,6 +303,202 @@ def _parse_api_datetime(value, fallback: datetime) -> datetime:
         return parsed.replace(tzinfo=SG_TZ)
     return parsed.astimezone(SG_TZ)
 
+
+_GEO_PARAM_TARGET = "__geo_target"
+_GEO_PARAM_STATUS = "__geo_status"
+_GEO_PARAM_LAT = "__geo_lat"
+_GEO_PARAM_LON = "__geo_lon"
+_GEO_PARAM_MESSAGE = "__geo_message"
+_GEO_EVENT_KEY = "_geo_event"
+
+
+def _consume_geolocation_event() -> None:
+    query_params = st.query_params
+    target = query_params.get(_GEO_PARAM_TARGET)
+    if not target:
+        return
+
+    status = str(query_params.get(_GEO_PARAM_STATUS, "error")).strip().lower() or "error"
+    message = str(query_params.get(_GEO_PARAM_MESSAGE, "")).strip()
+    lat_raw = query_params.get(_GEO_PARAM_LAT)
+    lon_raw = query_params.get(_GEO_PARAM_LON)
+
+    event: dict[str, object] = {"target": str(target), "status": status, "message": message}
+    if status == "success":
+        try:
+            event["lat"] = float(lat_raw)
+            event["lon"] = float(lon_raw)
+        except Exception:
+            event["status"] = "error"
+            event["message"] = "We couldn't read your current coordinates from the browser."
+
+    st.session_state[_GEO_EVENT_KEY] = event
+    for param_key in (_GEO_PARAM_TARGET, _GEO_PARAM_STATUS, _GEO_PARAM_LAT, _GEO_PARAM_LON, _GEO_PARAM_MESSAGE):
+        if param_key in query_params:
+            del query_params[param_key]
+
+
+def _apply_geolocation_to_fields(target: str, lat_key: str, lon_key: str) -> None:
+    event = st.session_state.get(_GEO_EVENT_KEY)
+    if not isinstance(event, dict):
+        return
+    if str(event.get("target")) != str(target):
+        return
+
+    if event.get("status") == "success":
+        st.session_state[lat_key] = float(event.get("lat"))
+        st.session_state[lon_key] = float(event.get("lon"))
+        st.success("Latitude and longitude were updated.")
+    else:
+        message = str(event.get("message") or "Location access was not granted.")
+        st.warning(f"Couldn't use current location: {message}")
+
+    st.session_state.pop(_GEO_EVENT_KEY, None)
+
+
+def _number_input_with_state_default(label: str, key: str, default: float, **kwargs):
+    if key not in st.session_state:
+        st.session_state[key] = default
+    return st.number_input(label, key=key, **kwargs)
+
+
+def _text_input_with_state_default(label: str, key: str, default: str, **kwargs):
+    if key not in st.session_state:
+        st.session_state[key] = default
+    return st.text_input(label, key=key, **kwargs)
+
+
+def render_map_marker_picker(target: str, lat_key: str, lon_key: str, initial_lat: float, initial_lon: float) -> None:
+    _apply_geolocation_to_fields(target, lat_key, lon_key)
+    lat = _safe_float(st.session_state.get(lat_key), initial_lat)
+    lon = _safe_float(st.session_state.get(lon_key), initial_lon)
+    st.caption("Pick a location on the map. Drag marker or click map, then apply.")
+    components.html(
+        f"""
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+          #map-{target} {{ height: 270px; width: 100%; border-radius: 8px; border: 1px solid #d0d5dd; }}
+          .map-controls-{target} {{ margin-top: 8px; display: flex; gap: 8px; align-items: center; }}
+          .map-coord-{target} {{ font-size: 0.82rem; color: #667085; }}
+          .map-btn-{target} {{ background:#0f6fb2;color:white;border:none;border-radius:8px;padding:8px 12px;font-size:0.9rem;cursor:pointer; }}
+        </style>
+        <div id="map-{target}"></div>
+        <div class="map-controls-{target}">
+          <button type="button" id="map-apply-{target}" class="map-btn-{target}">Use Marker Coordinates</button>
+          <span id="map-coord-{target}" class="map-coord-{target}"></span>
+        </div>
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+        (function () {{
+          const target = {json.dumps(target)};
+          const initialLat = Number({json.dumps(lat)});
+          const initialLon = Number({json.dumps(lon)});
+          const mapEl = document.getElementById("map-" + target);
+          const coordEl = document.getElementById("map-coord-" + target);
+          const applyBtn = document.getElementById("map-apply-" + target);
+          if (!mapEl || !applyBtn || !window.L) return;
+          const finish = (lat, lon) => {{
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set({_GEO_PARAM_TARGET!r}, target);
+            url.searchParams.set({_GEO_PARAM_STATUS!r}, "success");
+            url.searchParams.set({_GEO_PARAM_LAT!r}, String(lat));
+            url.searchParams.set({_GEO_PARAM_LON!r}, String(lon));
+            url.searchParams.delete({_GEO_PARAM_MESSAGE!r});
+            window.parent.history.replaceState({{}}, "", url.toString());
+            window.parent.location.reload();
+          }};
+          const map = L.map(mapEl).setView([initialLat, initialLon], 15);
+          L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{ maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }}).addTo(map);
+          const marker = L.marker([initialLat, initialLon], {{ draggable: true }}).addTo(map);
+          const setMarkerPosition = (lat, lon, zoom=16) => {{
+            marker.setLatLng([lat, lon]);
+            map.setView([lat, lon], zoom);
+            renderCoords();
+          }};
+          const renderCoords = () => {{
+            const pos = marker.getLatLng();
+            coordEl.textContent = `Lat: ${{pos.lat.toFixed(6)}}, Lon: ${{pos.lng.toFixed(6)}}`;
+          }};
+          renderCoords();
+          marker.on("dragend", renderCoords);
+          map.on("click", (e) => {{ marker.setLatLng(e.latlng); renderCoords(); }});
+          applyBtn.addEventListener("click", () => {{
+            const pos = marker.getLatLng();
+            finish(pos.lat, pos.lng);
+          }});
+          if (navigator.geolocation) {{
+            navigator.geolocation.getCurrentPosition(
+              (position) => {{
+                setMarkerPosition(position.coords.latitude, position.coords.longitude, 17);
+              }},
+              () => {{
+                // Keep existing initial coordinates if permission denied/unavailable.
+              }},
+              {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }}
+            );
+          }}
+        }})();
+        </script>
+        """,
+        height=330,
+    )
+
+
+def render_current_location_picker(target: str, lat_key: str, lon_key: str) -> None:
+    _apply_geolocation_to_fields(target, lat_key, lon_key)
+    st.caption("Use your browser location permissions to auto-fill current latitude and longitude.")
+    components.html(
+        f"""
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button id="geo-btn-{target}" style="background:#0f6fb2;color:white;border:none;border-radius:8px;padding:8px 12px;font-size:0.9rem;cursor:pointer;">
+            Use Current Coordinates
+          </button>
+          <span style="font-size:0.82rem;color:#667085;">Permission prompt appears in your browser.</span>
+        </div>
+        <script>
+        (function () {{
+          const target = {json.dumps(target)};
+          const button = document.getElementById("geo-btn-" + target);
+          if (!button) return;
+          const finish = (status, message, lat, lon) => {{
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set({_GEO_PARAM_TARGET!r}, target);
+            url.searchParams.set({_GEO_PARAM_STATUS!r}, status);
+            if (message) url.searchParams.set({_GEO_PARAM_MESSAGE!r}, String(message));
+            else url.searchParams.delete({_GEO_PARAM_MESSAGE!r});
+            if (typeof lat === "number" && typeof lon === "number") {{
+              url.searchParams.set({_GEO_PARAM_LAT!r}, String(lat));
+              url.searchParams.set({_GEO_PARAM_LON!r}, String(lon));
+            }} else {{
+              url.searchParams.delete({_GEO_PARAM_LAT!r});
+              url.searchParams.delete({_GEO_PARAM_LON!r});
+            }}
+            window.parent.history.replaceState({{}}, "", url.toString());
+            window.parent.location.reload();
+          }};
+          button.addEventListener("click", () => {{
+            if (!navigator.geolocation) {{
+              finish("error", "Geolocation is not supported in this browser.");
+              return;
+            }}
+            navigator.geolocation.getCurrentPosition(
+              (position) => finish("success", "", position.coords.latitude, position.coords.longitude),
+              (error) => {{
+                let reason = "Unable to get your current location.";
+                if (error && error.code === 1) reason = "Location permission was denied.";
+                if (error && error.code === 2) reason = "Location services are unavailable.";
+                if (error && error.code === 3) reason = "Location request timed out.";
+                finish("error", reason);
+              }},
+              {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
+            );
+          }});
+        }})();
+        </script>
+        """,
+        height=58,
+    )
+
 st.title("Course & Session Management")
 st.markdown("Create and manage courses and sessions for student attendance.")
 
@@ -333,15 +509,49 @@ if current_role not in {"instructor", "admin"}:
 
 st.markdown("---")
 
-# Tabs for different management functions
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Create Course", "Create Session", "Manage Enrollments", "Manage Sessions", "Recovery", "Manage Devices"])
+# Section switcher (faster than tabs because only one section executes per rerun)
+manage_sections = ["Create Course", "Create Session", "Manage Enrollments", "Manage Sessions", "Manage Devices"]
+default_manage_section = "Create Course"
+if "manage_active_section" not in st.session_state or st.session_state.get("manage_active_section") not in manage_sections:
+    st.session_state["manage_active_section"] = default_manage_section
+if st.session_state.get("manage_section_control") not in manage_sections:
+    st.session_state["manage_section_control"] = st.session_state["manage_active_section"]
+
+try:
+    active_section = st.segmented_control(
+        "Manage Section",
+        options=manage_sections,
+        key="manage_section_control",
+    )
+    if not active_section:
+        active_section = st.session_state.get("manage_active_section", default_manage_section)
+except Exception:
+    st.markdown("##### Manage Section")
+    active_section = st.radio(
+        "Manage Section",
+        options=manage_sections,
+        horizontal=True,
+        key="manage_section_control_fallback",
+    )
+
+if not active_section:
+    active_section = st.session_state.get("manage_active_section", default_manage_section)
+st.session_state["manage_active_section"] = active_section
+_consume_geolocation_event()
 
 # ============================================================================
 # TAB 1: CREATE COURSE
 # ============================================================================
-with tab1:
+if active_section == "Create Course":
     st.subheader("Create New Course")
     st.markdown("Create a new course for attendance tracking.")
+    # Reset stale Streamlit widget state once when defaults change.
+    create_course_default_coords_version = "2026-04-10-v2"
+    if st.session_state.get("create_course_default_coords_version") != create_course_default_coords_version:
+        st.session_state["create_course_venue_lat_v3"] = 1.3460885449338553
+        st.session_state["create_course_venue_lon_v3"] = 103.68122503972508
+        st.session_state["create_course_venue_name_v3"] = ""
+        st.session_state["create_course_default_coords_version"] = create_course_default_coords_version
     if current_role != "admin":
         st.info("Only admins can create courses and assign instructors.")
     else:
@@ -359,17 +569,20 @@ with tab1:
                 course_code = st.text_input(
                     "Course Code *",
                     placeholder="CS3099",
-                    help="Unique course code (e.g., CS3099)"
+                    help="Unique course code (e.g., CS3099)",
+                    key="create_course_code",
                 )
                 course_name = st.text_input(
                     "Course Name *",
                     placeholder="Capstone Project",
-                    help="Full name of the course"
+                    help="Full name of the course",
+                    key="create_course_name",
                 )
                 semester = st.text_input(
                     "Semester *",
                     placeholder="AY2024-25 Sem 2",
-                    help="Academic semester"
+                    help="Academic semester",
+                    key="create_course_semester",
                 )
                 selected_instructor = st.selectbox(
                     "Instructor *",
@@ -378,26 +591,39 @@ with tab1:
                     index=None,
                     placeholder="Select an instructor",
                     disabled=bool(instructor_error) or not instructors,
-                    help="Assign the course owner instructor"
+                    help="Assign the course owner instructor",
+                    key="create_course_instructor",
                 )
 
             with col2:
                 venue_name = st.text_input(
                     "Default Venue",
                     placeholder="COM1-0212",
-                    help="Default venue for sessions"
+                    help="Default venue for sessions",
+                    key="create_course_venue_name_v3"
                 )
-                venue_lat = st.number_input(
+                _apply_geolocation_to_fields("create_course", "create_course_venue_lat_v3", "create_course_venue_lon_v3")
+                render_map_marker_picker(
+                    "create_course",
+                    "create_course_venue_lat_v3",
+                    "create_course_venue_lon_v3",
+                    _safe_float(st.session_state.get("create_course_venue_lat_v3"), 1.3460885449338553),
+                    _safe_float(st.session_state.get("create_course_venue_lon_v3"), 103.68122503972508),
+                )
+                render_current_location_picker("create_course", "create_course_venue_lat_v3", "create_course_venue_lon_v3")
+                venue_lat = _number_input_with_state_default(
                     "Venue Latitude",
-                    value=1.2950,
+                    key="create_course_venue_lat_v3",
+                    default=1.3460885449338553,
                     format="%.6f",
-                    help="GPS latitude of venue"
+                    help="GPS latitude of venue",
                 )
-                venue_lon = st.number_input(
+                venue_lon = _number_input_with_state_default(
                     "Venue Longitude",
-                    value=103.7737,
+                    key="create_course_venue_lon_v3",
+                    default=103.68122503972508,
                     format="%.6f",
-                    help="GPS longitude of venue"
+                    help="GPS longitude of venue",
                 )
 
             col1, col2 = st.columns(2)
@@ -407,7 +633,8 @@ with tab1:
                     value=100,
                     min_value=10,
                     max_value=1000,
-                    help="How far from venue students can check in"
+                    help="How far from venue students can check in",
+                    key="create_course_geofence",
                 )
             with col2:
                 risk_threshold = st.slider(
@@ -416,7 +643,8 @@ with tab1:
                     max_value=1.0,
                     value=0.5,
                     step=0.1,
-                    help="Check-ins above this score will be flagged"
+                    help="Check-ins above this score will be flagged",
+                    key="create_course_risk_threshold",
                 )
 
             submit_course = st.form_submit_button(
@@ -489,6 +717,12 @@ with tab1:
                     st.write(f"**Risk Threshold:** {course.get('risk_threshold', 0.5)}")
                     st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
 
+                course_lat_key = f"course_lat_{course.get('id')}"
+                course_lon_key = f"course_lon_{course.get('id')}"
+                if course_lat_key not in st.session_state:
+                    st.session_state[course_lat_key] = _safe_float(course.get("venue_latitude"), 1.3460885449338553)
+                if course_lon_key not in st.session_state:
+                    st.session_state[course_lon_key] = _safe_float(course.get("venue_longitude"), 103.68122503972508)
                 st.markdown("##### Edit Course")
                 with st.form(f"edit_course_form_{course.get('id')}"):
                     edit_col1, edit_col2 = st.columns(2)
@@ -504,10 +738,10 @@ with tab1:
                             value=str(course.get("semester") or ""),
                             key=f"course_semester_{course.get('id')}"
                         )
-                        updated_venue_name = st.text_input(
+                        updated_venue_name = _text_input_with_state_default(
                             "Venue",
-                            value=str(course.get("venue_name") or ""),
-                            key=f"course_venue_{course.get('id')}"
+                            key=f"course_venue_{course.get('id')}",
+                            default=str(course.get("venue_name") or ""),
                         )
                         updated_description = st.text_area(
                             "Description",
@@ -516,17 +750,34 @@ with tab1:
                         )
 
                     with edit_col2:
-                        updated_lat = st.number_input(
-                            "Venue Latitude",
-                            value=_safe_float(course.get("venue_latitude"), 1.2950),
-                            format="%.6f",
-                            key=f"course_lat_{course.get('id')}"
+                        _apply_geolocation_to_fields(
+                            f"edit_course_{course.get('id')}",
+                            f"course_lat_{course.get('id')}",
+                            f"course_lon_{course.get('id')}",
                         )
-                        updated_lon = st.number_input(
-                            "Venue Longitude",
-                            value=_safe_float(course.get("venue_longitude"), 103.7737),
+                        render_map_marker_picker(
+                            f"edit_course_{course.get('id')}",
+                            f"course_lat_{course.get('id')}",
+                            f"course_lon_{course.get('id')}",
+                            _safe_float(st.session_state.get(f"course_lat_{course.get('id')}"), _safe_float(course.get("venue_latitude"), 1.3460885449338553)),
+                            _safe_float(st.session_state.get(f"course_lon_{course.get('id')}"), _safe_float(course.get("venue_longitude"), 103.68122503972508)),
+                        )
+                        render_current_location_picker(
+                            f"edit_course_{course.get('id')}",
+                            f"course_lat_{course.get('id')}",
+                            f"course_lon_{course.get('id')}",
+                        )
+                        updated_lat = _number_input_with_state_default(
+                            "Venue Latitude",
+                            key=f"course_lat_{course.get('id')}",
+                            default=_safe_float(course.get("venue_latitude"), 1.3460885449338553),
                             format="%.6f",
-                            key=f"course_lon_{course.get('id')}"
+                        )
+                        updated_lon = _number_input_with_state_default(
+                            "Venue Longitude",
+                            key=f"course_lon_{course.get('id')}",
+                            default=_safe_float(course.get("venue_longitude"), 103.68122503972508),
+                            format="%.6f",
                         )
                         updated_geofence = st.number_input(
                             "Geofence Radius (meters)",
@@ -594,7 +845,7 @@ with tab1:
                                 st.success("Course updated successfully.")
                                 st.rerun()
                             elif response is not None:
-                                st.error(f"Failed to update course: {response_error(response)}")
+                                st.error(response_error(response, "Couldn't update the course right now."))
                             else:
                                 st.error("Failed to connect to server while updating course.")
 
@@ -631,7 +882,7 @@ with tab1:
                                 error = response_error(response)
                                 st.error(f"Failed to delete: {error}")
                         except Exception as e:
-                            st.error(f"Connection error: {str(e)}")
+                            st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
     else:
         st.info("No courses found. Create one above!")
 
@@ -639,7 +890,7 @@ with tab1:
 # ============================================================================
 # TAB 2: CREATE SESSION
 # ============================================================================
-with tab2:
+if active_section == "Create Session":
     st.subheader("Create New Session")
     st.markdown("Create a new attendance session for a course.")
 
@@ -653,14 +904,47 @@ with tab2:
     if not courses:
         st.warning("No courses found. Please create a course first.")
     else:
+        # Course selection outside form so map interactions are not buffered by form state.
+        course_options = {f"{c['code']} - {c['name']}": c for c in courses}
+        selected_course_name = st.selectbox(
+            "Select Course *",
+            options=list(course_options.keys()),
+            key="create_session_course",
+        )
+        selected_course = course_options[selected_course_name]
+        session_location_suffix = str(selected_course.get("id") or "default")
+        session_venue_key = f"create_session_venue_{session_location_suffix}"
+        default_lat = selected_course.get('venue_latitude')
+        if default_lat is None:
+            default_lat = 1.3460885449338553
+        default_lon = selected_course.get('venue_longitude')
+        if default_lon is None:
+            default_lon = 103.68122503972508
+        default_geofence = selected_course.get('geofence_radius_meters')
+        if default_geofence is None:
+            default_geofence = 100
+        default_risk_threshold = selected_course.get('risk_threshold')
+        if default_risk_threshold is None:
+            default_risk_threshold = 0.5
+        session_lat_key = f"create_session_lat_{session_location_suffix}"
+        session_lon_key = f"create_session_lon_{session_location_suffix}"
+        if session_venue_key not in st.session_state:
+            st.session_state[session_venue_key] = str(selected_course.get('venue_name') or '')
+        if session_lat_key not in st.session_state:
+            st.session_state[session_lat_key] = float(default_lat)
+        if session_lon_key not in st.session_state:
+            st.session_state[session_lon_key] = float(default_lon)
+
         with st.form("create_session_form"):
-            # Course selection
-            course_options = {f"{c['code']} - {c['name']}": c for c in courses}
-            selected_course_name = st.selectbox(
-                "Select Course *",
-                options=list(course_options.keys())
-            )
-            selected_course = course_options[selected_course_name]
+            st.caption(f"Selected course: {selected_course.get('code', 'N/A')} - {selected_course.get('name', 'N/A')}")
+            default_start = datetime.now(SG_TZ) + timedelta(minutes=10)
+            default_start = default_start.replace(second=0, microsecond=0)
+            minute_remainder = default_start.minute % 5
+            minutes_to_add = (5 - minute_remainder) if minute_remainder else 5
+            default_start = default_start + timedelta(minutes=minutes_to_add)
+            default_end = default_start + timedelta(hours=2)
+            default_checkin_open = default_start - timedelta(minutes=15)
+            default_checkin_close = default_start + timedelta(minutes=30)
 
             selected_session_instructor = None
             if current_role == "admin":
@@ -679,7 +963,8 @@ with tab2:
                     index=default_index,
                     placeholder="Select an instructor",
                     disabled=bool(instructor_error) or not instructors,
-                    help="Required when admin creates a session"
+                    help="Required when admin creates a session",
+                    key="create_session_instructor",
                 )
 
                 if instructor_error:
@@ -687,134 +972,166 @@ with tab2:
                 elif not instructors:
                     st.warning("No active instructors were found. Create or activate an instructor first.")
 
-            col1, col2 = st.columns(2)
-
-            with col1:
+            st.markdown("##### Session Basics")
+            basics_left, basics_right = st.columns([1.4, 1])
+            with basics_left:
                 session_name = st.text_input(
                     "Session Name *",
                     placeholder="Lecture 1: Introduction",
-                    help="Name/title of the session"
+                    help="Name/title of the session",
+                    key="create_session_name",
                 )
+                session_description = st.text_area(
+                    "Description",
+                    key="create_session_description",
+                    help="Optional details about this session",
+                )
+            with basics_right:
                 session_type = st.selectbox(
                     "Session Type *",
                     options=["lecture", "tutorial", "lab", "other"],
-                    help="Type of session"
+                    help="Type of session",
+                    key="create_session_type",
                 )
+                st.caption("All dates and times are in Singapore Time (SGT).")
 
-            with col2:
-                # Date and time inputs - default to 10 minutes from now
-                default_start = datetime.now(SG_TZ) + timedelta(minutes=10)
-                # Round up safely to the next 5-minute interval (handles day/hour rollover).
-                default_start = default_start.replace(second=0, microsecond=0)
-                minute_remainder = default_start.minute % 5
-                minutes_to_add = (5 - minute_remainder) if minute_remainder else 5
-                default_start = default_start + timedelta(minutes=minutes_to_add)
-                default_end = default_start + timedelta(hours=2)
-                
-                session_date = st.date_input(
-                    "Session Date *",
-                    value=default_start.date()
-                )
-                start_time = st.time_input(
-                    "Start Time *",
-                    value=default_start.replace(tzinfo=None).time()
-                )
-                end_time = st.time_input(
-                    "End Time *",
-                    value=default_end.replace(tzinfo=None).time()
-                )
+            st.markdown("##### Session Timing (SGT)")
+            timing_col1, timing_col2 = st.columns(2)
+            with timing_col1:
+                st.markdown("Start")
+                start_date_col, start_time_col = st.columns(2)
+                with start_date_col:
+                    start_date = st.date_input(
+                        "Start Date *",
+                        value=default_start.date(),
+                        key="create_session_start_date",
+                    )
+                with start_time_col:
+                    start_time = st.time_input(
+                        "Start Time *",
+                        value=default_start.replace(tzinfo=None).time(),
+                        key="create_session_start_time",
+                    )
+            with timing_col2:
+                st.markdown("End")
+                end_date_col, end_time_col = st.columns(2)
+                with end_date_col:
+                    end_date = st.date_input(
+                        "End Date *",
+                        value=default_end.date(),
+                        key="create_session_end_date",
+                    )
+                with end_time_col:
+                    end_time = st.time_input(
+                        "End Time *",
+                        value=default_end.replace(tzinfo=None).time(),
+                        key="create_session_end_time",
+                    )
 
-            st.markdown("##### Check-in Window")
-            col1, col2 = st.columns(2)
-            with col1:
-                checkin_opens_minutes = st.number_input(
-                    "Opens (minutes before start)",
-                    value=15,
-                    min_value=0,
-                    max_value=60,
-                    help="How many minutes before session start check-in opens"
-                )
-            with col2:
-                checkin_closes_minutes = st.number_input(
-                    "Closes (minutes after start)",
-                    value=30,
-                    min_value=0,
-                    max_value=120,
-                    help="How many minutes after session start check-in closes"
-                )
+            st.markdown("##### Check-in Window (SGT)")
+            window_col1, window_col2 = st.columns(2)
+            with window_col1:
+                st.markdown("Open")
+                open_date_col, open_time_col = st.columns(2)
+                with open_date_col:
+                    checkin_open_date = st.date_input(
+                        "Check-in Open Date",
+                        value=default_checkin_open.date(),
+                        key="create_session_checkin_open_date",
+                    )
+                with open_time_col:
+                    checkin_open_time = st.time_input(
+                        "Check-in Open Time",
+                        value=default_checkin_open.replace(tzinfo=None).time(),
+                        key="create_session_checkin_open_time",
+                    )
+            with window_col2:
+                st.markdown("Close")
+                close_date_col, close_time_col = st.columns(2)
+                with close_date_col:
+                    checkin_close_date = st.date_input(
+                        "Check-in Close Date",
+                        value=default_checkin_close.date(),
+                        key="create_session_checkin_close_date",
+                    )
+                with close_time_col:
+                    checkin_close_time = st.time_input(
+                        "Check-in Close Time",
+                        value=default_checkin_close.replace(tzinfo=None).time(),
+                        key="create_session_checkin_close_time",
+                    )
 
-            st.markdown("##### Venue (Optional - uses course default if empty)")
-            col1, col2, col3 = st.columns(3)
-            with col1:
+            st.markdown("##### Venue")
+            venue_left, venue_right = st.columns([1, 2])
+            with venue_left:
                 session_venue = st.text_input(
                     "Venue Name",
-                    value=selected_course.get('venue_name', ''),
-                    help="Leave empty to use course default"
+                    help="Leave empty to use course default",
+                    key=session_venue_key,
                 )
-            with col2:
-                default_lat = selected_course.get('venue_latitude')
-                if default_lat is None:
-                    default_lat = 1.2950
-                default_lon = selected_course.get('venue_longitude')
-                if default_lon is None:
-                    default_lon = 103.7737
-                default_geofence = selected_course.get('geofence_radius_meters')
-                if default_geofence is None:
-                    default_geofence = 100
-                default_risk_threshold = selected_course.get('risk_threshold')
-                if default_risk_threshold is None:
-                    default_risk_threshold = 0.5
-
-                session_lat = st.number_input(
-                    "Latitude",
-                    value=float(default_lat),
-                    format="%.6f"
+                session_lat = _number_input_with_state_default(
+                    "Venue Latitude",
+                    key=session_lat_key,
+                    default=float(default_lat),
+                    format="%.6f",
                 )
-            with col3:
-                session_lon = st.number_input(
-                    "Longitude",
-                    value=float(default_lon),
-                    format="%.6f"
+                session_lon = _number_input_with_state_default(
+                    "Venue Longitude",
+                    key=session_lon_key,
+                    default=float(default_lon),
+                    format="%.6f",
+                )
+            with venue_right:
+                _apply_geolocation_to_fields(f"create_session_{session_location_suffix}", session_lat_key, session_lon_key)
+                render_map_marker_picker(
+                    f"create_session_{session_location_suffix}",
+                    session_lat_key,
+                    session_lon_key,
+                    _safe_float(st.session_state.get(session_lat_key), float(default_lat)),
+                    _safe_float(st.session_state.get(session_lon_key), float(default_lon)),
+                )
+                render_current_location_picker(
+                    f"create_session_{session_location_suffix}",
+                    session_lat_key,
+                    session_lon_key,
                 )
 
             st.markdown("##### Security Settings")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                require_liveness = st.checkbox("Require Liveness Check", value=True)
-                require_face_match = st.checkbox("Require Face Match", value=False)
-            with col2:
+            sec_col1, sec_col2 = st.columns(2)
+            with sec_col1:
+                require_liveness = st.checkbox("Require Liveness Check", value=True, key="create_session_require_liveness")
+                require_face_match = st.checkbox("Require Face Match", value=False, key="create_session_require_face_match")
+                qr_code_enabled = st.checkbox(
+                    "Require QR Code",
+                    value=False,
+                    help="Students must scan the instructor QR before submitting attendance",
+                    key="create_session_qr_enabled",
+                )
+            with sec_col2:
                 session_geofence = st.number_input(
                     "Geofence Radius (m)",
                     value=int(default_geofence),
                     min_value=10,
-                    max_value=1000
-                )
-            with col3:
-                qr_code_enabled = st.checkbox(
-                    "Require QR Code",
-                    value=False,
-                    help="Students must scan the instructor QR before submitting attendance"
+                    max_value=1000,
+                    key="create_session_geofence",
                 )
                 session_risk_threshold = st.slider(
                     "Risk Threshold",
                     min_value=0.0,
                     max_value=1.0,
                     value=float(default_risk_threshold),
-                    step=0.1
+                    step=0.1,
+                    key="create_session_risk_threshold",
                 )
 
             submit_session = st.form_submit_button("Create Session", type="primary", use_container_width=True)
 
             if submit_session:
                 # Build datetime objects first for validation
-                scheduled_start = datetime.combine(session_date, start_time).replace(tzinfo=SG_TZ)
-                scheduled_end = datetime.combine(session_date, end_time).replace(tzinfo=SG_TZ)
-                # Allow overnight sessions: if end clock time is earlier than start,
-                # treat end as next day.
-                if scheduled_end <= scheduled_start:
-                    scheduled_end = scheduled_end + timedelta(days=1)
-                checkin_opens = scheduled_start - timedelta(minutes=checkin_opens_minutes)
-                checkin_closes = scheduled_start + timedelta(minutes=checkin_closes_minutes)
+                scheduled_start = datetime.combine(start_date, start_time).replace(tzinfo=SG_TZ)
+                scheduled_end = datetime.combine(end_date, end_time).replace(tzinfo=SG_TZ)
+                checkin_opens = datetime.combine(checkin_open_date, checkin_open_time).replace(tzinfo=SG_TZ)
+                checkin_closes = datetime.combine(checkin_close_date, checkin_close_time).replace(tzinfo=SG_TZ)
 
                 # Validation checks
                 validation_errors = []
@@ -842,6 +1159,7 @@ with tab2:
                     session_data = {
                         "course_id": selected_course['id'],
                         "name": session_name,
+                        "description": session_description.strip() or None,
                         "session_type": session_type,
                         "scheduled_start": to_api_datetime(scheduled_start),
                         "scheduled_end": to_api_datetime(scheduled_end),
@@ -879,7 +1197,7 @@ with tab2:
 # ============================================================================
 # TAB 3: MANAGE ENROLLMENTS
 # ============================================================================
-with tab3:
+if active_section == "Manage Enrollments":
     st.subheader("Manage Student Enrollments")
     st.markdown("Enroll students in courses.")
 
@@ -1019,18 +1337,23 @@ with tab3:
                     st.dataframe(df[available_cols], use_container_width=True)
 
                 st.markdown("##### Remove Enrollment")
-                enrollment_options = {
-                    f"{s.get('student_name', 'Unknown')} ({s.get('student_email', 'N/A')})": s
+                enrollments_by_id = {
+                    str(s.get("id")): s
                     for s in students
-                    if s.get('id')
+                    if s.get("id")
                 }
-                if enrollment_options:
-                    selected_enrollment_label = st.selectbox(
+                if enrollments_by_id:
+                    selected_enrollment_id = st.selectbox(
                         "Select enrollment to remove",
-                        options=list(enrollment_options.keys()),
+                        options=list(enrollments_by_id.keys()),
+                        format_func=lambda eid: (
+                            f"{enrollments_by_id[eid].get('student_name', 'Unknown')} "
+                            f"({enrollments_by_id[eid].get('student_email', 'N/A')}) | "
+                            f"ID:{eid[:8]}"
+                        ),
                         key="remove_enrollment_select"
                     )
-                    selected_enrollment = enrollment_options[selected_enrollment_label]
+                    selected_enrollment = enrollments_by_id[selected_enrollment_id]
 
                     if st.button("Remove Enrollment", key="remove_enrollment_btn", type="secondary"):
                         remove_response = api_delete(f"/enrollments/{selected_enrollment['id']}")
@@ -1038,7 +1361,7 @@ with tab3:
                             st.success("Enrollment removed.")
                             st.rerun()
                         else:
-                            st.error(f"Failed to remove enrollment: {response_error(remove_response)}")
+                            st.error(response_error(remove_response, "Couldn't remove enrollment right now."))
                 else:
                     st.caption("No removable enrollment IDs available from API response.")
             else:
@@ -1050,7 +1373,7 @@ with tab3:
 # ============================================================================
 # TAB 4: SESSION STATUS
 # ============================================================================
-with tab4:
+if active_section == "Manage Sessions":
     st.subheader("Manage Sessions")
     st.markdown("Edit session details, manage lifecycle status, and delete eligible sessions.")
 
@@ -1076,26 +1399,33 @@ with tab4:
                 session.get('scheduled_start', '')
             )
         )
-        session_options = {
-            f"{s.get('course_code', 'N/A')} - {s.get('name')} ({s.get('status')})": s
+        # Use session IDs as selectbox values so duplicate labels do not overwrite each other.
+        sessions_by_id = {
+            str(s.get("id")): s
             for s in sessions
+            if s.get("id")
         }
-
-        session_option_keys = list(session_options.keys())
+        session_option_ids = list(sessions_by_id.keys())
         default_session_index = 0
-        for index, key in enumerate(session_option_keys):
-            if session_options[key].get('status') == 'scheduled':
+        for index, session_id in enumerate(session_option_ids):
+            if sessions_by_id[session_id].get('status') == 'scheduled':
                 default_session_index = index
                 break
 
-        selected_session_name = st.selectbox(
+        selected_session_id = st.selectbox(
             "Select Session",
-            options=session_option_keys,
+            options=session_option_ids,
             index=default_session_index,
+            format_func=lambda sid: (
+                f"{sessions_by_id[sid].get('course_code', 'N/A')} - "
+                f"{sessions_by_id[sid].get('name', 'Unnamed')} "
+                f"({sessions_by_id[sid].get('status', 'unknown')}) | "
+                f"{sessions_by_id[sid].get('scheduled_start', 'N/A')} | "
+                f"ID:{sid[:8]}"
+            ),
             help="Activate is only available for sessions that are currently scheduled and whose course is still active."
         )
-        selected_session = dict(session_options[selected_session_name])
-        selected_session_id = selected_session.get("id")
+        selected_session = dict(sessions_by_id[selected_session_id])
         if selected_session_id:
             detail_response = api_get(f"/sessions/{selected_session_id}")
             if detail_response is not None and detail_response.status_code == 200:
@@ -1135,6 +1465,9 @@ with tab4:
         st.markdown("---")
         st.markdown("##### Edit Session")
         st.caption("You can edit session details except course and session type.")
+        can_edit_session = str(status).strip().lower() == "scheduled"
+        if not can_edit_session:
+            st.info("Only sessions in `scheduled` status can be edited.")
 
         now_sg = datetime.now(SG_TZ).replace(second=0, microsecond=0)
         default_start_dt = _parse_api_datetime(selected_session.get("scheduled_start"), now_sg)
@@ -1148,78 +1481,178 @@ with tab4:
             default_start_dt + timedelta(minutes=30)
         )
         edit_session_key = str(selected_session.get("id") or "unknown")
+        form_locked = not can_edit_session
+        edit_session_lat_key = f"edit_venue_lat_{edit_session_key}"
+        edit_session_lon_key = f"edit_venue_lon_{edit_session_key}"
+        if edit_session_lat_key not in st.session_state:
+            st.session_state[edit_session_lat_key] = _safe_float(selected_session.get("venue_latitude"), 1.3460885449338553)
+        if edit_session_lon_key not in st.session_state:
+            st.session_state[edit_session_lon_key] = _safe_float(selected_session.get("venue_longitude"), 103.68122503972508)
 
         with st.form(f"edit_session_form_{selected_session.get('id')}"):
-            edit_col1, edit_col2 = st.columns(2)
-
-            with edit_col1:
+            st.markdown("##### Session Basics")
+            edit_basics_left, edit_basics_right = st.columns([1.4, 1])
+            with edit_basics_left:
                 updated_session_name = st.text_input(
                     "Session Name *",
                     value=str(selected_session.get("name") or ""),
-                    key=f"edit_session_name_{edit_session_key}"
+                    key=f"edit_session_name_{edit_session_key}",
+                    disabled=form_locked,
                 )
                 updated_description = st.text_area(
                     "Description",
                     value=str(selected_session.get("description") or ""),
-                    key=f"edit_description_{edit_session_key}"
+                    key=f"edit_description_{edit_session_key}",
+                    disabled=form_locked,
                 )
+            with edit_basics_right:
                 st.text_input(
                     "Session Type",
                     value=str(selected_session.get("session_type") or "N/A"),
                     disabled=True,
                     help="Session type is set at creation and not editable via API.",
-                    key=f"edit_session_type_{edit_session_key}"
+                    key=f"edit_session_type_{edit_session_key}",
                 )
+                st.caption("All dates and times are in Singapore Time (SGT).")
 
-            with edit_col2:
-                updated_start_date = st.date_input("Start Date", value=default_start_dt.date(), key=f"edit_start_date_{edit_session_key}")
-                updated_start_time = st.time_input("Start Time", value=default_start_dt.replace(tzinfo=None).time(), key=f"edit_start_time_{edit_session_key}")
-                updated_end_date = st.date_input("End Date", value=default_end_dt.date(), key=f"edit_end_date_{edit_session_key}")
-                updated_end_time = st.time_input("End Time", value=default_end_dt.replace(tzinfo=None).time(), key=f"edit_end_time_{edit_session_key}")
+            st.markdown("##### Session Timing (SGT)")
+            edit_timing_col1, edit_timing_col2 = st.columns(2)
+            with edit_timing_col1:
+                st.markdown("Start")
+                edit_start_date_col, edit_start_time_col = st.columns(2)
+                with edit_start_date_col:
+                    updated_start_date = st.date_input(
+                        "Start Date",
+                        value=default_start_dt.date(),
+                        key=f"edit_start_date_{edit_session_key}",
+                        disabled=form_locked,
+                    )
+                with edit_start_time_col:
+                    updated_start_time = st.time_input(
+                        "Start Time",
+                        value=default_start_dt.replace(tzinfo=None).time(),
+                        key=f"edit_start_time_{edit_session_key}",
+                        disabled=form_locked,
+                    )
+            with edit_timing_col2:
+                st.markdown("End")
+                edit_end_date_col, edit_end_time_col = st.columns(2)
+                with edit_end_date_col:
+                    updated_end_date = st.date_input(
+                        "End Date",
+                        value=default_end_dt.date(),
+                        key=f"edit_end_date_{edit_session_key}",
+                        disabled=form_locked,
+                    )
+                with edit_end_time_col:
+                    updated_end_time = st.time_input(
+                        "End Time",
+                        value=default_end_dt.replace(tzinfo=None).time(),
+                        key=f"edit_end_time_{edit_session_key}",
+                        disabled=form_locked,
+                    )
 
-            st.markdown("##### Check-in Window")
+            st.markdown("##### Check-in Window (SGT)")
             checkin_col1, checkin_col2 = st.columns(2)
             with checkin_col1:
-                updated_checkin_open_date = st.date_input("Check-in Open Date", value=default_checkin_open_dt.date(), key=f"edit_checkin_open_date_{edit_session_key}")
-                updated_checkin_open_time = st.time_input("Check-in Open Time", value=default_checkin_open_dt.replace(tzinfo=None).time(), key=f"edit_checkin_open_time_{edit_session_key}")
+                st.markdown("Open")
+                edit_open_date_col, edit_open_time_col = st.columns(2)
+                with edit_open_date_col:
+                    updated_checkin_open_date = st.date_input(
+                        "Check-in Open Date",
+                        value=default_checkin_open_dt.date(),
+                        key=f"edit_checkin_open_date_{edit_session_key}",
+                        disabled=form_locked,
+                    )
+                with edit_open_time_col:
+                    updated_checkin_open_time = st.time_input(
+                        "Check-in Open Time",
+                        value=default_checkin_open_dt.replace(tzinfo=None).time(),
+                        key=f"edit_checkin_open_time_{edit_session_key}",
+                        disabled=form_locked,
+                    )
             with checkin_col2:
-                updated_checkin_close_date = st.date_input("Check-in Close Date", value=default_checkin_close_dt.date(), key=f"edit_checkin_close_date_{edit_session_key}")
-                updated_checkin_close_time = st.time_input("Check-in Close Time", value=default_checkin_close_dt.replace(tzinfo=None).time(), key=f"edit_checkin_close_time_{edit_session_key}")
+                st.markdown("Close")
+                edit_close_date_col, edit_close_time_col = st.columns(2)
+                with edit_close_date_col:
+                    updated_checkin_close_date = st.date_input(
+                        "Check-in Close Date",
+                        value=default_checkin_close_dt.date(),
+                        key=f"edit_checkin_close_date_{edit_session_key}",
+                        disabled=form_locked,
+                    )
+                with edit_close_time_col:
+                    updated_checkin_close_time = st.time_input(
+                        "Check-in Close Time",
+                        value=default_checkin_close_dt.replace(tzinfo=None).time(),
+                        key=f"edit_checkin_close_time_{edit_session_key}",
+                        disabled=form_locked,
+                    )
 
-            st.markdown("##### Venue and Security")
-            venue_col1, venue_col2, venue_col3 = st.columns(3)
-            with venue_col1:
-                updated_venue_name = st.text_input(
+            st.markdown("##### Venue")
+            edit_venue_left, edit_venue_right = st.columns([1, 2])
+            with edit_venue_left:
+                updated_venue_name = _text_input_with_state_default(
                     "Venue Name",
-                    value=str(selected_session.get("venue_name") or ""),
-                    key=f"edit_venue_name_{edit_session_key}"
+                    key=f"edit_venue_name_{edit_session_key}",
+                    default=str(selected_session.get("venue_name") or ""),
+                    help="Leave empty to use course default",
+                    disabled=form_locked,
                 )
-            with venue_col2:
-                updated_venue_lat = st.number_input(
+                updated_venue_lat = _number_input_with_state_default(
                     "Venue Latitude",
-                    value=_safe_float(selected_session.get("venue_latitude"), 1.2950),
+                    key=f"edit_venue_lat_{edit_session_key}",
+                    default=_safe_float(selected_session.get("venue_latitude"), 1.3460885449338553),
                     format="%.6f",
-                    key=f"edit_venue_lat_{edit_session_key}"
+                    disabled=form_locked,
                 )
-            with venue_col3:
-                updated_venue_lon = st.number_input(
+                updated_venue_lon = _number_input_with_state_default(
                     "Venue Longitude",
-                    value=_safe_float(selected_session.get("venue_longitude"), 103.7737),
+                    key=f"edit_venue_lon_{edit_session_key}",
+                    default=_safe_float(selected_session.get("venue_longitude"), 103.68122503972508),
                     format="%.6f",
-                    key=f"edit_venue_lon_{edit_session_key}"
+                    disabled=form_locked,
+                )
+            with edit_venue_right:
+                _apply_geolocation_to_fields(
+                    f"edit_session_{edit_session_key}",
+                    f"edit_venue_lat_{edit_session_key}",
+                    f"edit_venue_lon_{edit_session_key}",
+                )
+                render_map_marker_picker(
+                    f"edit_session_{edit_session_key}",
+                    f"edit_venue_lat_{edit_session_key}",
+                    f"edit_venue_lon_{edit_session_key}",
+                    _safe_float(st.session_state.get(f"edit_venue_lat_{edit_session_key}"), _safe_float(selected_session.get("venue_latitude"), 1.3460885449338553)),
+                    _safe_float(st.session_state.get(f"edit_venue_lon_{edit_session_key}"), _safe_float(selected_session.get("venue_longitude"), 103.68122503972508)),
+                )
+                render_current_location_picker(
+                    f"edit_session_{edit_session_key}",
+                    f"edit_venue_lat_{edit_session_key}",
+                    f"edit_venue_lon_{edit_session_key}",
                 )
 
-            settings_col1, settings_col2, settings_col3 = st.columns(3)
+            st.markdown("##### Security Settings")
+            settings_col1, settings_col2 = st.columns(2)
             with settings_col1:
                 updated_require_liveness = st.checkbox(
                     "Require Liveness Check",
                     value=bool(selected_session.get("require_liveness_check", True)),
-                    key=f"edit_require_liveness_{edit_session_key}"
+                    key=f"edit_require_liveness_{edit_session_key}",
+                    disabled=form_locked,
                 )
                 updated_require_face_match = st.checkbox(
                     "Require Face Match",
                     value=bool(selected_session.get("require_face_match", False)),
-                    key=f"edit_require_face_match_{edit_session_key}"
+                    key=f"edit_require_face_match_{edit_session_key}",
+                    disabled=form_locked,
+                )
+                updated_qr_code_enabled = st.checkbox(
+                    "Require QR Code",
+                    value=bool(selected_session.get("qr_code_enabled", False)),
+                    help="Students must scan the instructor QR before submitting attendance",
+                    key=f"edit_qr_enabled_{edit_session_key}",
+                    disabled=form_locked,
                 )
             with settings_col2:
                 updated_geofence_radius = st.number_input(
@@ -1227,30 +1660,30 @@ with tab4:
                     min_value=10,
                     max_value=1000,
                     value=int(_safe_float(selected_session.get("geofence_radius_meters"), 100)),
-                    key=f"edit_geofence_{edit_session_key}"
+                    key=f"edit_geofence_{edit_session_key}",
+                    disabled=form_locked,
                 )
-                updated_qr_code_enabled = st.checkbox(
-                    "Require QR Code",
-                    value=bool(selected_session.get("qr_code_enabled", False)),
-                    key=f"edit_qr_enabled_{edit_session_key}"
-                )
-            with settings_col3:
                 updated_risk_threshold = st.slider(
                     "Risk Threshold",
                     min_value=0.0,
                     max_value=1.0,
                     step=0.1,
                     value=max(0.0, min(1.0, _safe_float(selected_session.get("risk_threshold"), 0.5))),
-                    key=f"edit_risk_threshold_{edit_session_key}"
+                    key=f"edit_risk_threshold_{edit_session_key}",
+                    disabled=form_locked,
                 )
 
             submit_edit_session = st.form_submit_button(
                 "Save Session Changes",
                 type="primary",
-                use_container_width=True
+                use_container_width=True,
+                disabled=not can_edit_session,
             )
 
             if submit_edit_session:
+                if not can_edit_session:
+                    st.error("Session edits are only allowed when status is `scheduled`.")
+                    st.stop()
                 updated_start_dt = datetime.combine(updated_start_date, updated_start_time).replace(tzinfo=SG_TZ)
                 updated_end_dt = datetime.combine(updated_end_date, updated_end_time).replace(tzinfo=SG_TZ)
                 updated_checkin_open_dt = datetime.combine(updated_checkin_open_date, updated_checkin_open_time).replace(tzinfo=SG_TZ)
@@ -1290,7 +1723,7 @@ with tab4:
                         st.success("Session updated successfully.")
                         st.rerun()
                     elif update_response is not None:
-                        st.error(f"Failed to update session: {response_error(update_response)}")
+                        st.error(response_error(update_response, "Couldn't update the session right now."))
                     else:
                         st.error("Failed to connect to server while updating session.")
 
@@ -1311,7 +1744,7 @@ with tab4:
         valid_transitions = {
             'scheduled': ['active', 'cancelled'],
             'active': ['closed', 'cancelled'],
-            'closed': [], # Finalized - no transitions allowed
+            'closed': ['cancelled'], # Allow cancellation from closed (matches backend/spec)
             'cancelled': [] # Terminal state - no transitions allowed
         }
 
@@ -1377,7 +1810,7 @@ with tab4:
         # Show explanation of current state
         st.markdown("---")
         if status == 'closed':
-            st.info("This session is **closed**. Attendance has been finalized and cannot be changed.")
+            st.info("This session is **closed**. Attendance is finalized, but you may still cancel the session if needed.")
         elif status == 'cancelled':
             st.info("This session is **cancelled**. No further changes are allowed.")
         elif status == 'active':
@@ -1390,12 +1823,12 @@ with tab4:
         **Status Transition Rules:**
         - **Scheduled** -> Active (open check-in) or Cancelled
         - **Active** -> Closed (finalize attendance) or Cancelled
-        - **Closed** -> No changes (attendance is finalized)
+        - **Closed** -> Cancelled
         - **Cancelled** -> No changes (terminal state)
         """)
 
-        # Delete button - only for scheduled or cancelled sessions (no check-ins recorded)
-        if status in ['scheduled', 'cancelled']:
+        # Delete button - only for scheduled sessions (matches backend/spec)
+        if status == 'scheduled':
             st.warning("""
             **Warning:** Deleting a session is permanent. 
             Only sessions with status `scheduled` can be deleted. Active or closed sessions must be `cancelled` instead.
@@ -1421,58 +1854,20 @@ with tab4:
                         error = response_error(response)
                         st.error(f"Failed to delete: {error}")
                 except Exception as e:
-                    st.error(f"Connection error: {str(e)}")
-        elif status in ['active', 'closed']:
+                    st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
+        elif status in ['active', 'closed', 'cancelled']:
             st.markdown("---")
-            st.markdown("##### Danger Zone")
-            st.warning("This session cannot be deleted because it has/had active check-ins. Close or cancel it instead.")
+            st.markdown("##### Delete Restrictions")
+            if status == 'cancelled':
+                st.warning("Cancelled sessions cannot be deleted. Only scheduled sessions can be deleted.")
+            else:
+                st.warning("This session cannot be deleted because it has/had active check-ins. Close or cancel it instead.")
 
 
 # ============================================================================
-# TAB 5: RECOVERY
+# TAB 5: MANAGE DEVICES (ADMIN)
 # ============================================================================
-with tab5:
-    st.subheader("Recover Deleted Courses")
-    st.markdown("Reactivate courses that were previously deleted (soft-deleted).")
-
-    if st.button("Refresh Deleted Courses"):
-        st.rerun()
-
-    # Get inactive courses
-    deleted_courses = fetch_all_courses(is_active=False)
-    if deleted_courses:
-        st.write(f"Found **{len(deleted_courses)}** deleted courses:")
-
-        for course in deleted_courses:
-            with st.expander(f"{course.get('code')} - {course.get('name')}"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**ID:** `{course.get('id')}`")
-                    st.write(f"**Semester:** {course.get('semester')}")
-                with col2:
-                    st.write(f"**Venue:** {course.get('venue_name', 'Not set')}")
-                    st.write(f"**Active:** {'Yes' if course.get('is_active') else 'No'}")
-
-                # Restore button
-                if st.button("Restore Course", key=f"restore_course_{course.get('id')}"):
-                    restore_response = api_put(
-                        f"/courses/{course.get('id')}",
-                        {"is_active": True}
-                    )
-                    if restore_response is not None and restore_response.status_code == 200:
-                        st.success("Course restored!")
-                        st.rerun()
-                    else:
-                        error = response_error(restore_response)
-                        st.error(f"Failed to restore: {error}")
-    else:
-        st.info("No deleted courses found.")
-
-
-# ============================================================================
-# TAB 6: MANAGE DEVICES (ADMIN)
-# ============================================================================
-with tab6:
+if active_section == "Manage Devices":
     st.subheader("Device Management")
     st.markdown("View registered devices and revoke stale entries.")
     if current_role != "admin":
@@ -1658,12 +2053,19 @@ with tab6:
                 st.write(f"**Active:** {'Yes' if device.get('is_active', True) else 'No'}")
                 st.write(f"**Trust Score:** {device.get('trust_score', 'N/A')}")
                 st.write(f"**Trusted:** {'Yes' if device.get('is_trusted', False) else 'No'}")
+                is_revoked = bool(device.get("revoked_at") or device.get("revocation_reason"))
+                st.write(f"**Revoked:** {'Yes' if is_revoked else 'No'}")
+                if device.get("revoked_at"):
+                    st.write(f"**Revoked At:** {device.get('revoked_at')}")
+                if device.get("revocation_reason"):
+                    st.write(f"**Revocation Reason:** {device.get('revocation_reason')}")
                 with st.form(f"update_device_{device['id']}"):
                     st.markdown("##### Update Device")
                     updated_active = st.checkbox(
                         "Active",
                         value=bool(device.get('is_active', True)),
                         key=f"device_active_{device['id']}",
+                        disabled=is_revoked
                     )
 
                     updated_trusted = None
@@ -1672,11 +2074,15 @@ with tab6:
                             "Trusted (admin)",
                             value=bool(device.get('is_trusted', False)),
                             key=f"device_trusted_{device['id']}",
+                            disabled=is_revoked
                         )
 
-                    submit_update = st.form_submit_button("Save Device Changes", use_container_width=True)
+                    submit_update = st.form_submit_button("Save Device Changes", use_container_width=True, disabled=is_revoked)
 
                     if submit_update:
+                        if is_revoked:
+                            set_feedback("error", "Revoked devices cannot be modified.")
+                            st.rerun()
                         payload = {}
 
                         if payload is not None and updated_active != bool(device.get('is_active', True)):
@@ -1695,12 +2101,12 @@ with tab6:
                                 set_feedback("success", "Device updated.")
                                 st.rerun()
                             else:
-                                set_feedback("error", f"Failed to update device: {response_error(resp)}")
+                                set_feedback("error", response_error(resp, "Couldn't update the device right now."))
                                 st.rerun()
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Revoke Device", key=f"revoke_{device['id']}"):
+                    if st.button("Revoke Device", key=f"revoke_{device['id']}", disabled=is_revoked):
                         revoked, revoke_error = revoke_device(device['id'], headers)
                         if revoked:
                             set_feedback("success", "Device revoked.")

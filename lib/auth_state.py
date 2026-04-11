@@ -27,17 +27,8 @@ AUTH_VALIDATE_CACHE_SECONDS = 60
 
 
 def _apply_sidebar_lock() -> None:
-    st.markdown(
-        """
-        <style>
-          [data-testid="collapsedControl"] {
-            display: none !important;
-            visibility: hidden !important;
-          }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Keep Streamlit's collapsed control visible so users can reopen the sidebar.
+    return
 
 
 def _ensure_defaults() -> None:
@@ -286,6 +277,31 @@ def clear_auth_state() -> None:
     _set_query_sid(None)
 
 
+def _logout_current_session() -> None:
+    token = st.session_state.get('access_token')
+    try:
+        if token:
+            requests.post(
+                f"{API_BASE_URL}/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=8,
+            )
+    except Exception:
+        pass
+    clear_auth_state()
+
+
+def render_sidebar_logout() -> None:
+    if not st.session_state.get('authenticated', False):
+        return
+
+    with st.sidebar:
+        st.markdown("---")
+        if st.button("Logout", use_container_width=True, key="global_sidebar_logout"):
+            _logout_current_session()
+            st.switch_page("app.py")
+
+
 def require_auth() -> None:
     initialize_auth_state()
     if not st.session_state.get('authenticated', False):
@@ -294,6 +310,7 @@ def require_auth() -> None:
             clear_auth_state()
             st.switch_page("app.py")
         st.stop()
+    render_sidebar_logout()
 
 
 def get_auth_headers() -> Dict[str, str]:
