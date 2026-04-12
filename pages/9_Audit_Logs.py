@@ -18,6 +18,44 @@ apply_theme()
 def get_headers():
     return get_auth_headers()
 
+def get_entity_type_options() -> list[str]:
+    base_types = [
+        "user",
+        "course",
+        "session",
+        "checkin",
+        "enrollment",
+        "device",
+        "auth",
+        "endpoint",
+        "export",
+        "retention_cleanup",
+    ]
+    discovered_types: set[str] = set()
+    try:
+        resp = requests.get(
+            f"{API_BASE_URL}/audit/",
+            params={"limit": 500},
+            headers=get_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            payload = resp.json()
+            items = payload.get("items", payload) if isinstance(payload, dict) else payload
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_type = item.get("resource_type") or item.get("entity_type")
+                    entity_type = str(raw_type or "").strip()
+                    if entity_type:
+                        discovered_types.add(entity_type)
+    except Exception:
+        pass
+
+    merged = sorted(set(base_types).union(discovered_types))
+    return ["All", *merged]
+
 
 def get_severity(action: str) -> str:
     """Classify audit action into severity level for color-coding."""
@@ -77,7 +115,7 @@ def main():
     with col3:
         entity_filter = st.selectbox(
             "Entity Type",
-            options=['All', 'user', 'course', 'session', 'checkin', 'enrollment', 'device']
+            options=get_entity_type_options()
         )
 
     with col4:

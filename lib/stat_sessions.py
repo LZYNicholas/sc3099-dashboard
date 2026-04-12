@@ -446,8 +446,6 @@ def main(embedded: bool = False):
                     latest_checkin_dt = ts
 
             total_live = len(recent_checkins)
-            flagged_or_rejected = status_counts["flagged"] + status_counts["rejected"]
-            flag_rate_pct = (flagged_or_rejected / total_live * 100.0) if total_live else 0.0
 
             pulse_by_session: dict[str, dict[str, object]] = {}
             for ci in recent_checkins:
@@ -612,18 +610,19 @@ def main(embedded: bool = False):
                             {"total": 0, "approved": 0, "flagged": 0, "rejected": 0, "latest": None},
                         )
                         session_total = int(session_pulse.get("total", 0) or 0)
+                        session_approved = int(session_pulse.get("approved", 0) or 0)
                         session_flagged = int(session_pulse.get("flagged", 0) or 0)
                         session_rejected = int(session_pulse.get("rejected", 0) or 0)
-                        session_flag_rate = ((session_flagged + session_rejected) / session_total * 100.0) if session_total else 0.0
+                        session_approval_rate = (session_approved / session_total * 100.0) if session_total else 0.0
                         session_latest = session_pulse.get("latest")
                         st.markdown("##### Live Pulse (last 5m)")
                         s_p1, s_p2, s_p3, s_p4, s_p5 = st.columns(5)
                         s_p1.metric("Check-ins (5m)", session_total)
                         s_p2.metric(
                             "Approved / Flagged / Rejected",
-                            f"{int(session_pulse.get('approved', 0) or 0)} / {session_flagged} / {session_rejected}",
+                            f"{session_approved} / {session_flagged} / {session_rejected}",
                         )
-                        s_p3.metric("Flag Rate", f"{session_flag_rate:.1f}%")
+                        s_p3.metric("Approval Rate", f"{session_approval_rate:.1f}%")
                         s_p4.metric(
                             "Last Check-in (SGT)",
                             session_latest.strftime("%H:%M:%S") if session_latest is not None else "N/A",

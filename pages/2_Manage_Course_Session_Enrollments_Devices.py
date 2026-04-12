@@ -310,6 +310,23 @@ _GEO_PARAM_LAT = "__geo_lat"
 _GEO_PARAM_LON = "__geo_lon"
 _GEO_PARAM_MESSAGE = "__geo_message"
 _GEO_EVENT_KEY = "_geo_event"
+_GEO_PENDING_CREATE_SESSION_COURSE_ID = "_geo_pending_create_session_course_id"
+_GEO_PENDING_MANAGE_SESSION_ID = "_geo_pending_manage_session_id"
+_GEO_PENDING_EDIT_COURSE_ID = "_geo_pending_edit_course_id"
+_PENDING_MANAGE_SESSION_SELECTION = "_pending_manage_session_selection"
+
+
+def _geo_target_to_section(target: str) -> str | None:
+    normalized = str(target or "").strip().lower()
+    if normalized.startswith("create_session_"):
+        return "Create Session"
+    if normalized.startswith("edit_session_"):
+        return "Manage Sessions"
+    if normalized.startswith("create_course"):
+        return "Create Course"
+    if normalized.startswith("edit_course_"):
+        return "Manage Course"
+    return None
 
 
 def _consume_geolocation_event() -> None:
@@ -333,7 +350,31 @@ def _consume_geolocation_event() -> None:
             event["message"] = "We couldn't read your current coordinates from the browser."
 
     st.session_state[_GEO_EVENT_KEY] = event
-    for param_key in (_GEO_PARAM_TARGET, _GEO_PARAM_STATUS, _GEO_PARAM_LAT, _GEO_PARAM_LON, _GEO_PARAM_MESSAGE):
+    normalized_target = str(target).strip().lower()
+    if normalized_target.startswith("create_session_"):
+        pending_course_id = str(target).split("create_session_", 1)[1].strip()
+        if pending_course_id:
+            st.session_state[_GEO_PENDING_CREATE_SESSION_COURSE_ID] = pending_course_id
+    elif normalized_target.startswith("edit_session_"):
+        pending_session_id = str(target).split("edit_session_", 1)[1].strip()
+        if pending_session_id:
+            st.session_state[_GEO_PENDING_MANAGE_SESSION_ID] = pending_session_id
+    elif normalized_target.startswith("edit_course_"):
+        pending_edit_course_id = str(target).split("edit_course_", 1)[1].strip()
+        if pending_edit_course_id:
+            st.session_state[_GEO_PENDING_EDIT_COURSE_ID] = pending_edit_course_id
+    target_section = _geo_target_to_section(str(target))
+    if target_section:
+        st.session_state["manage_active_section"] = target_section
+        st.session_state["manage_section_control"] = target_section
+        st.session_state["manage_section_control_fallback"] = target_section
+    for param_key in (
+        _GEO_PARAM_TARGET,
+        _GEO_PARAM_STATUS,
+        _GEO_PARAM_LAT,
+        _GEO_PARAM_LON,
+        _GEO_PARAM_MESSAGE,
+    ):
         if param_key in query_params:
             del query_params[param_key]
 
@@ -510,7 +551,8 @@ if current_role not in {"instructor", "admin"}:
 st.markdown("---")
 
 # Section switcher (faster than tabs because only one section executes per rerun)
-manage_sections = ["Create Course", "Create Session", "Manage Enrollments", "Manage Sessions", "Manage Devices"]
+_consume_geolocation_event()
+manage_sections = ["Create Course", "Manage Course", "Create Session", "Manage Enrollments", "Manage Sessions", "Manage Devices"]
 default_manage_section = "Create Course"
 if "manage_active_section" not in st.session_state or st.session_state.get("manage_active_section") not in manage_sections:
     st.session_state["manage_active_section"] = default_manage_section
@@ -537,7 +579,6 @@ except Exception:
 if not active_section:
     active_section = st.session_state.get("manage_active_section", default_manage_section)
 st.session_state["manage_active_section"] = active_section
-_consume_geolocation_event()
 
 # ============================================================================
 # TAB 1: CREATE COURSE
@@ -563,6 +604,44 @@ if active_section == "Create Course":
             st.warning("No active instructors were found. Create or activate an instructor account first.")
 
         with st.form("create_course_form"):
+            st.markdown("##### Course Location")
+            st.caption("Pick coordinates first. Applying map/current location refreshes the page.")
+            course_loc_left, course_loc_right = st.columns([2, 1])
+
+            with course_loc_left:
+                _apply_geolocation_to_fields("create_course", "create_course_venue_lat_v3", "create_course_venue_lon_v3")
+                render_map_marker_picker(
+                    "create_course",
+                    "create_course_venue_lat_v3",
+                    "create_course_venue_lon_v3",
+                    _safe_float(st.session_state.get("create_course_venue_lat_v3"), 1.3460885449338553),
+                    _safe_float(st.session_state.get("create_course_venue_lon_v3"), 103.68122503972508),
+                )
+                render_current_location_picker("create_course", "create_course_venue_lat_v3", "create_course_venue_lon_v3")
+
+            with course_loc_right:
+                venue_lat = _number_input_with_state_default(
+                    "Venue Latitude",
+                    key="create_course_venue_lat_v3",
+                    default=1.3460885449338553,
+                    format="%.6f",
+                    help="GPS latitude of venue",
+                )
+                venue_lon = _number_input_with_state_default(
+                    "Venue Longitude",
+                    key="create_course_venue_lon_v3",
+                    default=103.68122503972508,
+                    format="%.6f",
+                    help="GPS longitude of venue",
+                )
+                venue_name = st.text_input(
+                    "Default Venue",
+                    placeholder="COM1-0212",
+                    help="Default venue for sessions",
+                    key="create_course_venue_name_v3"
+                )
+
+            st.markdown("---")
             col1, col2 = st.columns(2)
 
             with col1:
@@ -596,35 +675,7 @@ if active_section == "Create Course":
                 )
 
             with col2:
-                venue_name = st.text_input(
-                    "Default Venue",
-                    placeholder="COM1-0212",
-                    help="Default venue for sessions",
-                    key="create_course_venue_name_v3"
-                )
-                _apply_geolocation_to_fields("create_course", "create_course_venue_lat_v3", "create_course_venue_lon_v3")
-                render_map_marker_picker(
-                    "create_course",
-                    "create_course_venue_lat_v3",
-                    "create_course_venue_lon_v3",
-                    _safe_float(st.session_state.get("create_course_venue_lat_v3"), 1.3460885449338553),
-                    _safe_float(st.session_state.get("create_course_venue_lon_v3"), 103.68122503972508),
-                )
-                render_current_location_picker("create_course", "create_course_venue_lat_v3", "create_course_venue_lon_v3")
-                venue_lat = _number_input_with_state_default(
-                    "Venue Latitude",
-                    key="create_course_venue_lat_v3",
-                    default=1.3460885449338553,
-                    format="%.6f",
-                    help="GPS latitude of venue",
-                )
-                venue_lon = _number_input_with_state_default(
-                    "Venue Longitude",
-                    key="create_course_venue_lon_v3",
-                    default=103.68122503972508,
-                    format="%.6f",
-                    help="GPS longitude of venue",
-                )
+                st.caption("Course details")
 
             col1, col2 = st.columns(2)
             with col1:
@@ -686,14 +737,31 @@ if active_section == "Create Course":
                         else:
                             st.error("Failed to connect to server")
 
-    # List existing courses
-    st.markdown("---")
-    st.subheader("Existing Courses")
+    st.info("Course editing and deletion are available in the `Manage Course` tab.")
 
-    if st.button("Refresh Courses"):
+
+# ============================================================================
+# TAB: MANAGE COURSE
+# ============================================================================
+if active_section == "Manage Course":
+    st.subheader("Manage Courses")
+    st.markdown("View, edit, and delete existing courses.")
+    pending_edit_course_id = str(st.session_state.get(_GEO_PENDING_EDIT_COURSE_ID, "") or "").strip()
+    if pending_edit_course_id:
+        st.session_state["create_course_load_existing"] = True
+    show_existing_courses = st.toggle(
+        "Load Existing Courses List",
+        value=False,
+        key="create_course_load_existing",
+        help="Turn on only when needed. Rendering many course edit forms/maps can be slow.",
+    )
+
+    if st.button("Refresh Courses", disabled=not show_existing_courses):
         st.rerun()
 
-    courses = fetch_all_courses(is_active=True)
+    if not show_existing_courses:
+        st.caption("Existing courses list is paused to keep Manage Course responsive.")
+    courses = fetch_all_courses(is_active=True) if show_existing_courses else []
     if courses:
         edit_instructors: list[dict] = []
         edit_instructor_error: str | None = None
@@ -706,7 +774,11 @@ if active_section == "Create Course":
             if isinstance(course_id, str):
                 sessions_by_course.setdefault(course_id, []).append(session)
         for course in courses:
-            with st.expander(f"{course.get('code')} - {course.get('name')}"):
+            current_course_id = str(course.get("id") or "")
+            with st.expander(
+                f"{course.get('code')} - {course.get('name')}",
+                expanded=bool(pending_edit_course_id and current_course_id == pending_edit_course_id),
+            ):
                 col1, col2 = st.columns(2)
                 with col1:
                     st.write(f"**ID:** `{course.get('id')}`")
@@ -849,12 +921,9 @@ if active_section == "Create Course":
                             else:
                                 st.error("Failed to connect to server while updating course.")
 
-                # Delete button - only for active courses
                 if course.get('is_active'):
-                    # Check if course has any sessions (from preloaded sessions map)
                     course_sessions = sessions_by_course.get(course.get('id'), [])
 
-                    # Show warning if course has sessions
                     if course_sessions:
                         active_sessions = [s for s in course_sessions if s.get('status') in ['scheduled', 'active']]
                         if active_sessions:
@@ -883,8 +952,13 @@ if active_section == "Create Course":
                                 st.error(f"Failed to delete: {error}")
                         except Exception as e:
                             st.error(friendly_error(e, "We couldn't connect to the server. Please try again."))
+        if pending_edit_course_id:
+            st.session_state.pop(_GEO_PENDING_EDIT_COURSE_ID, None)
     else:
-        st.info("No courses found. Create one above!")
+        if not show_existing_courses:
+            st.info("Existing courses list is currently hidden. Turn on `Load Existing Courses List` to view them.")
+        else:
+            st.info("No courses found. Create one above!")
 
 
 # ============================================================================
@@ -906,6 +980,14 @@ if active_section == "Create Session":
     else:
         # Course selection outside form so map interactions are not buffered by form state.
         course_options = {f"{c['code']} - {c['name']}": c for c in courses}
+        pending_course_id = str(st.session_state.pop(_GEO_PENDING_CREATE_SESSION_COURSE_ID, "") or "").strip()
+        if pending_course_id:
+            pending_label = next(
+                (label for label, course in course_options.items() if str(course.get("id") or "") == pending_course_id),
+                None,
+            )
+            if pending_label:
+                st.session_state["create_session_course"] = pending_label
         selected_course_name = st.selectbox(
             "Select Course *",
             options=list(course_options.keys()),
@@ -946,6 +1028,43 @@ if active_section == "Create Session":
             default_checkin_open = default_start - timedelta(minutes=15)
             default_checkin_close = default_start + timedelta(minutes=30)
 
+            st.markdown("##### Venue")
+            st.caption("Pick coordinates first. Applying map/current location refreshes the page.")
+            venue_left, venue_right = st.columns([2, 1])
+            with venue_left:
+                _apply_geolocation_to_fields(f"create_session_{session_location_suffix}", session_lat_key, session_lon_key)
+                render_map_marker_picker(
+                    f"create_session_{session_location_suffix}",
+                    session_lat_key,
+                    session_lon_key,
+                    _safe_float(st.session_state.get(session_lat_key), float(default_lat)),
+                    _safe_float(st.session_state.get(session_lon_key), float(default_lon)),
+                )
+                render_current_location_picker(
+                    f"create_session_{session_location_suffix}",
+                    session_lat_key,
+                    session_lon_key,
+                )
+            with venue_right:
+                session_venue = st.text_input(
+                    "Venue Name",
+                    help="Leave empty to use course default",
+                    key=session_venue_key,
+                )
+                session_lat = _number_input_with_state_default(
+                    "Venue Latitude",
+                    key=session_lat_key,
+                    default=float(default_lat),
+                    format="%.6f",
+                )
+                session_lon = _number_input_with_state_default(
+                    "Venue Longitude",
+                    key=session_lon_key,
+                    default=float(default_lon),
+                    format="%.6f",
+                )
+
+            st.markdown("---")
             selected_session_instructor = None
             if current_role == "admin":
                 default_instructor_id = str(selected_course.get('instructor_id') or "").strip()
@@ -1060,41 +1179,6 @@ if active_section == "Create Session":
                         value=default_checkin_close.replace(tzinfo=None).time(),
                         key="create_session_checkin_close_time",
                     )
-
-            st.markdown("##### Venue")
-            venue_left, venue_right = st.columns([1, 2])
-            with venue_left:
-                session_venue = st.text_input(
-                    "Venue Name",
-                    help="Leave empty to use course default",
-                    key=session_venue_key,
-                )
-                session_lat = _number_input_with_state_default(
-                    "Venue Latitude",
-                    key=session_lat_key,
-                    default=float(default_lat),
-                    format="%.6f",
-                )
-                session_lon = _number_input_with_state_default(
-                    "Venue Longitude",
-                    key=session_lon_key,
-                    default=float(default_lon),
-                    format="%.6f",
-                )
-            with venue_right:
-                _apply_geolocation_to_fields(f"create_session_{session_location_suffix}", session_lat_key, session_lon_key)
-                render_map_marker_picker(
-                    f"create_session_{session_location_suffix}",
-                    session_lat_key,
-                    session_lon_key,
-                    _safe_float(st.session_state.get(session_lat_key), float(default_lat)),
-                    _safe_float(st.session_state.get(session_lon_key), float(default_lon)),
-                )
-                render_current_location_picker(
-                    f"create_session_{session_location_suffix}",
-                    session_lat_key,
-                    session_lon_key,
-                )
 
             st.markdown("##### Security Settings")
             sec_col1, sec_col2 = st.columns(2)
@@ -1411,6 +1495,11 @@ if active_section == "Manage Sessions":
             if sessions_by_id[session_id].get('status') == 'scheduled':
                 default_session_index = index
                 break
+        pending_session_id = str(st.session_state.pop(_GEO_PENDING_MANAGE_SESSION_ID, "") or "").strip()
+        pending_action_session_id = str(st.session_state.pop(_PENDING_MANAGE_SESSION_SELECTION, "") or "").strip()
+        preferred_session_id = pending_action_session_id or pending_session_id
+        if preferred_session_id and preferred_session_id in sessions_by_id:
+            st.session_state["manage_sessions_selected_session_id"] = preferred_session_id
 
         selected_session_id = st.selectbox(
             "Select Session",
@@ -1424,6 +1513,8 @@ if active_section == "Manage Sessions":
                 f"ID:{sid[:8]}"
             ),
             help="Activate is only available for sessions that are currently scheduled and whose course is still active."
+            ,
+            key="manage_sessions_selected_session_id"
         )
         selected_session = dict(sessions_by_id[selected_session_id])
         if selected_session_id:
@@ -1435,6 +1526,11 @@ if active_section == "Manage Sessions":
                     detail_payload = None
                 if isinstance(detail_payload, dict):
                     selected_session.update(detail_payload)
+
+        def _preserve_manage_session_selection() -> None:
+            st.session_state[_PENDING_MANAGE_SESSION_SELECTION] = str(
+                selected_session.get("id") or selected_session_id
+            )
 
         st.markdown("---")
 
@@ -1490,6 +1586,51 @@ if active_section == "Manage Sessions":
             st.session_state[edit_session_lon_key] = _safe_float(selected_session.get("venue_longitude"), 103.68122503972508)
 
         with st.form(f"edit_session_form_{selected_session.get('id')}"):
+            st.markdown("##### Venue")
+            st.caption("Pick coordinates first. Applying map/current location refreshes the page.")
+            edit_venue_left, edit_venue_right = st.columns([2, 1])
+            with edit_venue_left:
+                _apply_geolocation_to_fields(
+                    f"edit_session_{edit_session_key}",
+                    f"edit_venue_lat_{edit_session_key}",
+                    f"edit_venue_lon_{edit_session_key}",
+                )
+                render_map_marker_picker(
+                    f"edit_session_{edit_session_key}",
+                    f"edit_venue_lat_{edit_session_key}",
+                    f"edit_venue_lon_{edit_session_key}",
+                    _safe_float(st.session_state.get(f"edit_venue_lat_{edit_session_key}"), _safe_float(selected_session.get("venue_latitude"), 1.3460885449338553)),
+                    _safe_float(st.session_state.get(f"edit_venue_lon_{edit_session_key}"), _safe_float(selected_session.get("venue_longitude"), 103.68122503972508)),
+                )
+                render_current_location_picker(
+                    f"edit_session_{edit_session_key}",
+                    f"edit_venue_lat_{edit_session_key}",
+                    f"edit_venue_lon_{edit_session_key}",
+                )
+            with edit_venue_right:
+                updated_venue_name = _text_input_with_state_default(
+                    "Venue Name",
+                    key=f"edit_venue_name_{edit_session_key}",
+                    default=str(selected_session.get("venue_name") or ""),
+                    help="Leave empty to use course default",
+                    disabled=form_locked,
+                )
+                updated_venue_lat = _number_input_with_state_default(
+                    "Venue Latitude",
+                    key=f"edit_venue_lat_{edit_session_key}",
+                    default=_safe_float(selected_session.get("venue_latitude"), 1.3460885449338553),
+                    format="%.6f",
+                    disabled=form_locked,
+                )
+                updated_venue_lon = _number_input_with_state_default(
+                    "Venue Longitude",
+                    key=f"edit_venue_lon_{edit_session_key}",
+                    default=_safe_float(selected_session.get("venue_longitude"), 103.68122503972508),
+                    format="%.6f",
+                    disabled=form_locked,
+                )
+
+            st.markdown("---")
             st.markdown("##### Session Basics")
             edit_basics_left, edit_basics_right = st.columns([1.4, 1])
             with edit_basics_left:
@@ -1589,49 +1730,6 @@ if active_section == "Manage Sessions":
                         disabled=form_locked,
                     )
 
-            st.markdown("##### Venue")
-            edit_venue_left, edit_venue_right = st.columns([1, 2])
-            with edit_venue_left:
-                updated_venue_name = _text_input_with_state_default(
-                    "Venue Name",
-                    key=f"edit_venue_name_{edit_session_key}",
-                    default=str(selected_session.get("venue_name") or ""),
-                    help="Leave empty to use course default",
-                    disabled=form_locked,
-                )
-                updated_venue_lat = _number_input_with_state_default(
-                    "Venue Latitude",
-                    key=f"edit_venue_lat_{edit_session_key}",
-                    default=_safe_float(selected_session.get("venue_latitude"), 1.3460885449338553),
-                    format="%.6f",
-                    disabled=form_locked,
-                )
-                updated_venue_lon = _number_input_with_state_default(
-                    "Venue Longitude",
-                    key=f"edit_venue_lon_{edit_session_key}",
-                    default=_safe_float(selected_session.get("venue_longitude"), 103.68122503972508),
-                    format="%.6f",
-                    disabled=form_locked,
-                )
-            with edit_venue_right:
-                _apply_geolocation_to_fields(
-                    f"edit_session_{edit_session_key}",
-                    f"edit_venue_lat_{edit_session_key}",
-                    f"edit_venue_lon_{edit_session_key}",
-                )
-                render_map_marker_picker(
-                    f"edit_session_{edit_session_key}",
-                    f"edit_venue_lat_{edit_session_key}",
-                    f"edit_venue_lon_{edit_session_key}",
-                    _safe_float(st.session_state.get(f"edit_venue_lat_{edit_session_key}"), _safe_float(selected_session.get("venue_latitude"), 1.3460885449338553)),
-                    _safe_float(st.session_state.get(f"edit_venue_lon_{edit_session_key}"), _safe_float(selected_session.get("venue_longitude"), 103.68122503972508)),
-                )
-                render_current_location_picker(
-                    f"edit_session_{edit_session_key}",
-                    f"edit_venue_lat_{edit_session_key}",
-                    f"edit_venue_lon_{edit_session_key}",
-                )
-
             st.markdown("##### Security Settings")
             settings_col1, settings_col2 = st.columns(2)
             with settings_col1:
@@ -1720,6 +1818,7 @@ if active_section == "Manage Sessions":
 
                     update_response = api_patch(f"/sessions/{selected_session.get('id')}", update_payload)
                     if update_response is not None and update_response.status_code == 200:
+                        _preserve_manage_session_selection()
                         st.success("Session updated successfully.")
                         st.rerun()
                     elif update_response is not None:
@@ -1765,6 +1864,7 @@ if active_section == "Manage Sessions":
                         {"status": "active"}
                     )
                     if response is not None and response.status_code == 200:
+                        _preserve_manage_session_selection()
                         st.success("Session activated!")
                         st.rerun()
                     else:
@@ -1780,6 +1880,7 @@ if active_section == "Manage Sessions":
                         {"status": "closed"}
                     )
                     if response is not None and response.status_code == 200:
+                        _preserve_manage_session_selection()
                         st.success("Session closed!")
                         st.rerun()
                     else:
@@ -1795,6 +1896,7 @@ if active_section == "Manage Sessions":
                         {"status": "cancelled"}
                     )
                     if response is not None and response.status_code == 200:
+                        _preserve_manage_session_selection()
                         st.success("Session cancelled!")
                         st.rerun()
                     else:
